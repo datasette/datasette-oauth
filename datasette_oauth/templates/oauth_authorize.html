@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Authorize {{ client_name }}{% endblock %}
+
+{% block content %}
+
+<h1>Authorize {{ client_name }}</h1>
+
+<p><strong>{{ client_name }}</strong> is requesting access to your Datasette account.</p>
+<p>It will redirect you to: <code>{{ redirect_uri }}</code></p>
+
+<form method="post" action="/-/oauth/authorize">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="client_id" value="{{ client_id }}">
+  <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+  <input type="hidden" name="scope" value="{{ scope_raw }}">
+  <input type="hidden" name="state" value="{{ state }}">
+  <input type="hidden" name="response_type" value="{{ response_type }}">
+
+  <h2>Requested permissions:</h2>
+  <ul>
+    {% for scope in scopes %}
+    <li>
+      <label><input type="checkbox" name="scope_{{ loop.index0 }}" checked> {{ scope.label }}</label>
+    </li>
+    {% endfor %}
+  </ul>
+
+  <p>
+    <input type="submit" value="Authorize">
+    <input type="submit" name="deny" value="Deny">
+  </p>
+</form>
+
+{% endblock %}

@@ -5,27 +5,189 @@
 [![Tests](https://github.com/datasette/datasette-oauth/actions/workflows/test.yml/badge.svg)](https://github.com/datasette/datasette-oauth/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/datasette/datasette-oauth/blob/main/LICENSE)
 
-Datasette as an OAuth provider
+Datasette as an OAuth provider. Allows third-party applications to request access to a Datasette instance on behalf of signed-in users, using the OAuth 2.0 Authorization Code flow.
+
+Access tokens are standard Datasette restricted API tokens (`dstok_...`), so all existing permission checks work automatically.
 
 ## Installation
 
 Install this plugin in the same environment as Datasette.
+
 ```bash
 datasette install datasette-oauth
 ```
-## Usage
 
-Usage instructions go here.
+## How it works
+
+```
+Third-party App                  Datasette                        User
+      |                               |                             |
+      |-- 1. Redirect user ---------->|                             |
+      |   GET /-/oauth/authorize      |                             |
+      |   ?client_id=...              |-- 2. Show consent screen -->|
+      |   &redirect_uri=...           |                             |
+      |   &scope=...                  |<-- 3. User approves --------|
+      |   &state=...                  |                             |
+      |   &response_type=code         |                             |
+      |                               |                             |
+      |<-- 4. Redirect with code -----|                             |
+      |   redirect_uri?code=...       |                             |
+      |                               |                             |
+      |-- 5. Exchange code ---------->|                             |
+      |   POST /-/oauth/token         |                             |
+      |   code=...&client_secret=...  |                             |
+      |                               |                             |
+      |<-- 6. Access token -----------|                             |
+      |   {"access_token":"dstok_..."}|                             |
+```
+
+## Endpoints
+
+### Register a client: `POST /-/oauth/clients`
+
+Requires authentication. Creates a new OAuth client application.
+
+```bash
+curl -X POST 'https://datasette.example.com/-/oauth/clients' \
+  -H 'Cookie: ds_actor=...' \
+  -d 'client_name=My App&redirect_uri=https://myapp.example.com/callback'
+```
+
+Response:
+
+```json
+{
+  "client_id": "a1b2c3...",
+  "client_secret": "d4e5f6...",
+  "client_name": "My App",
+  "redirect_uri": "https://myapp.example.com/callback"
+}
+```
+
+The `client_secret` is shown **once** at registration time. It is stored as a SHA-256 hash.
+
+### List your clients: `GET /-/oauth/clients`
+
+Requires authentication. Returns clients registered by the current user.
+
+```json
+[
+  {
+    "client_id": "a1b2c3...",
+    "client_name": "My App",
+    "redirect_uri": "https://myapp.example.com/callback",
+    "created_by": "user-id",
+    "created_at": "2025-01-15T10:30:00Z"
+  }
+]
+```
+
+### Authorization: `GET /-/oauth/authorize`
+
+Redirect the user here to request authorization. Parameters:
+
+| Parameter | Required | Description |
+|---|---|---|
+| `client_id` | Yes | The registered client ID |
+| `redirect_uri` | Yes | Must exactly match the registered redirect URI |
+| `scope` | Yes | JSON array of scope arrays (see below) |
+| `state` | Yes | Opaque value passed back to prevent CSRF |
+| `response_type` | Yes | Must be `code` |
+
+The user sees a consent screen showing the app name and requested permissions, each with a checkbox. They can uncheck permissions they don't want to grant.
+
+### Process consent: `POST /-/oauth/authorize`
+
+When the user clicks "Authorize", they are redirected back to the `redirect_uri` with:
+
+```
+https://myapp.example.com/callback?code=abc123...&state=your-state
+```
+
+If the user clicks "Deny":
+
+```
+https://myapp.example.com/callback?error=access_denied&state=your-state
+```
+
+### Exchange code for token: `POST /-/oauth/token`
+
+```bash
+curl -X POST 'https://datasette.example.com/-/oauth/token' \
+  -d 'grant_type=authorization_code' \
+  -d 'code=abc123...' \
+  -d 'client_id=a1b2c3...' \
+  -d 'client_secret=d4e5f6...' \
+  -d 'redirect_uri=https://myapp.example.com/callback'
+```
+
+Response:
+
+```json
+{
+  "access_token": "dstok_...",
+  "token_type": "bearer"
+}
+```
+
+Authorization codes expire after 10 minutes and are single-use.
+
+## Scope format
+
+Scopes are JSON arrays describing permissions at different levels:
+
+| Scope | Meaning |
+|---|---|
+| `["view-instance"]` | Global permission |
+| `["view-database", "mydb"]` | Permission on a specific database |
+| `["view-table", "mydb", "users"]` | Permission on a specific table |
+
+Multiple scopes are passed as a JSON array of arrays:
+
+```json
+[
+  ["view-instance"],
+  ["view-database", "mydb"],
+  ["view-table", "mydb", "users"],
+  ["insert-row", "mydb", "logs"]
+]
+```
+
+This maps directly to Datasette's existing token restriction system (`restrict_all`, `restrict_database`, `restrict_resource`).
+
+## Using the access token
+
+The access token is a standard Datasette API token. Use it with the `Authorization` header:
+
+```bash
+curl -H 'Authorization: Bearer dstok_...' \
+  'https://datasette.example.com/mydb/users.json'
+```
+
+The token is restricted to only the permissions the user approved on the consent screen.
+
+## Security
+
+- **Client secrets** are stored as SHA-256 hashes
+- **Authorization codes** expire after 10 minutes and are single-use
+- **Redirect URIs** must exactly match the registered URI
+- **CSRF protection** is enforced on browser-facing endpoints
+- The token endpoint skips CSRF (machine-to-machine, uses client_secret)
+- Only actors with an `id` can authorize (same check as `/-/create-token`)
+- Token-authenticated requests cannot be used to authorize new clients
 
 ## Development
 
 To set up this plugin locally, first checkout the code. You can confirm it is available like this:
+
 ```bash
 cd datasette-oauth
 # Confirm the plugin is visible
 uv run datasette plugins
 ```
+
 To run the tests:
+
 ```bash
 uv run pytest
 ```
