@@ -202,40 +202,21 @@ async def _oauth_authorize_get(request, datasette):
     except (json.JSONDecodeError, TypeError):
         return Response.json({"error": "Invalid scope"}, status=400)
 
-    # Build consent screen HTML
-    scope_checkboxes = []
-    for i, scope in enumerate(scopes):
-        label = _scope_label(scope)
-        scope_checkboxes.append(
-            f'<label><input type="checkbox" name="scope_{i}" checked> {label}</label>'
-        )
+    scope_items = [{"label": _scope_label(scope)} for scope in scopes]
 
-    csrftoken = request.scope.get("csrftoken", lambda: "")()
-
-    html = f"""<!DOCTYPE html>
-<html>
-<head><title>Authorize {client["client_name"]}</title></head>
-<body>
-<h1>Authorize {client["client_name"]}</h1>
-<p><strong>{client["client_name"]}</strong> is requesting access to your Datasette account.</p>
-<p>It will redirect you to: <code>{redirect_uri}</code></p>
-<form method="post" action="/-/oauth/authorize">
-  <input type="hidden" name="csrftoken" value="{csrftoken}">
-  <input type="hidden" name="client_id" value="{client_id}">
-  <input type="hidden" name="redirect_uri" value="{redirect_uri}">
-  <input type="hidden" name="scope" value='{scope_raw}'>
-  <input type="hidden" name="state" value="{state}">
-  <input type="hidden" name="response_type" value="{response_type}">
-  <h2>Requested permissions:</h2>
-  <ul>
-    {"".join(f"<li>{cb}</li>" for cb in scope_checkboxes)}
-  </ul>
-  <button type="submit">Authorize</button>
-  <button type="submit" name="deny" value="1">Deny</button>
-</form>
-</body>
-</html>"""
-
+    html = await datasette.render_template(
+        "oauth_authorize.html",
+        {
+            "client_name": client["client_name"],
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope_raw": scope_raw,
+            "state": state,
+            "response_type": response_type,
+            "scopes": scope_items,
+        },
+        request=request,
+    )
     return Response.html(html)
 
 

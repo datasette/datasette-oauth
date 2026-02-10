@@ -23,6 +23,12 @@ dev = [
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["datasette_oauth*"]
+
+[tool.setuptools.package-data]
+datasette_oauth = ["templates/*.html"]
+
 
 [project.urls]
 Homepage = "https://github.com/datasette/datasette-oauth"
