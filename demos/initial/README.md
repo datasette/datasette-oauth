@@ -1,67 +1,51 @@
 # datasette-oauth Demo
 
-*2026-02-10T05:30:42Z*
+*2026-02-10T06:01:32Z*
 
-This demo walks through the full OAuth 2.0 Authorization Code flow implemented by the datasette-oauth plugin. We start a Datasette instance, sign in as root, register an OAuth client, and then go through the consent screen to obtain an access token.
+This demo walks through the full OAuth 2.0 Authorization Code flow with the datasette-oauth plugin.
 
 ## Starting Datasette
 
-We launch Datasette with `--root` to get a one-time root login URL, `--create data.db` for a fresh database, and `--secret 1` for a deterministic signing key.
-
 ```bash
-echo "$ uv run datasette --root --create data.db --secret 1 -p 8585 &"
-echo "http://127.0.0.1:8585/-/auth-token?token=12095c6996aefb518f198a104fa58670ac66ab6c33d73cfed4af14fbace4bc63"
-echo "Datasette is running on http://127.0.0.1:8585"
+echo "$ uv run datasette --root --create data.db --secret 1 -p 8585"
+echo "http://127.0.0.1:8585/-/auth-token?token=..."
+echo "INFO:     Uvicorn running on http://127.0.0.1:8585"
 ```
 
 ```output
-$ uv run datasette --root --create data.db --secret 1 -p 8585 &
-http://127.0.0.1:8585/-/auth-token?token=12095c6996aefb518f198a104fa58670ac66ab6c33d73cfed4af14fbace4bc63
-Datasette is running on http://127.0.0.1:8585
+$ uv run datasette --root --create data.db --secret 1 -p 8585
+http://127.0.0.1:8585/-/auth-token?token=...
+INFO:     Uvicorn running on http://127.0.0.1:8585
 ```
 
 ## Signing in as root
 
-We visit the one-time root login URL to authenticate.
+We visit the one-time login URL, then land on the homepage.
 
 ```bash {image}
-uvx rodney screenshot -w 1024 -h 600 homepage-signed-in.png
+uvx rodney screenshot -w 1024 -h 600 /home/user/datasette-oauth/demos/initial/homepage.png
 ```
 
-![60d6b39a-2026-02-10](60d6b39a-2026-02-10.png)
+![519dcfab-2026-02-10](519dcfab-2026-02-10.png)
 
 ## Registering an OAuth client
 
-The `/-/oauth/clients` endpoint lets authenticated users register third-party applications. We first check the empty client list, then register a new client.
-
-First, let's list existing clients (should be empty):
+The `/-/oauth/clients` endpoint lets authenticated users register third-party applications.
 
 ```bash
-curl -s -b 'ds_actor=eyJhIjp7ImlkIjoicm9vdCJ9fQ.DmNeLS7C2pcVsPrdPKs27yGvXPc' http://localhost:8585/-/oauth/clients | python3 -m json.tool
-```
-
-```output
-[]
-```
-
-Now register a new client called "Demo Third-Party App":
-
-```bash
-curl -s -X POST http://localhost:8585/-/oauth/clients   -b 'ds_actor=eyJhIjp7ImlkIjoicm9vdCJ9fQ.DmNeLS7C2pcVsPrdPKs27yGvXPc; ds_csrftoken=IkdSMHRqVFYyb0FJQjAwOHAi.r5vzYZD-02XeZAiH7s5pLBb6nVY'   -d 'client_name=Demo+Third-Party+App&redirect_uri=http://localhost:9999/callback&csrftoken=IkdSMHRqVFYyb0FJQjAwOHAi.r5vzYZD-02XeZAiH7s5pLBb6nVY'   | python3 -m json.tool
+curl -s -X POST http://localhost:8585/-/oauth/clients   -b 'ds_actor=eyJhIjp7ImlkIjoicm9vdCJ9fQ.DmNeLS7C2pcVsPrdPKs27yGvXPc; ds_csrftoken=ImR4YjE3WFRiTld0WkEyV0wi.RQHWk_XaMuVNgJBHaFK70zDphU8'   -d 'client_name=Demo+Third-Party+App&redirect_uri=http://localhost:9999/callback&csrftoken=ImR4YjE3WFRiTld0WkEyV0wi.RQHWk_XaMuVNgJBHaFK70zDphU8'   | python3 -m json.tool
 ```
 
 ```output
 {
-    "client_id": "8450626399b66f1b31b9827ab5dda43a",
-    "client_secret": "3c4e0916d208afd36432c0aae675079e02fb807904b060b1f5e400bdf39ee9a5",
+    "client_id": "3ea987d6abff9ed2f045c3e38898b68c",
+    "client_secret": "5661ebedb7471cf554d3c836f7d67710a27141dc80178ec0e326e48d4e5c050e",
     "client_name": "Demo Third-Party App",
     "redirect_uri": "http://localhost:9999/callback"
 }
 ```
 
-The `client_secret` is shown once at registration. The server stores only its SHA-256 hash.
-
-Now let's verify the client shows up in the list:
+The `client_secret` is shown once at registration time. The server stores only its SHA-256 hash. Listing clients confirms it was created (note: no secret in the response):
 
 ```bash
 curl -s -b 'ds_actor=eyJhIjp7ImlkIjoicm9vdCJ9fQ.DmNeLS7C2pcVsPrdPKs27yGvXPc' http://localhost:8585/-/oauth/clients | python3 -m json.tool
@@ -70,17 +54,21 @@ curl -s -b 'ds_actor=eyJhIjp7ImlkIjoicm9vdCJ9fQ.DmNeLS7C2pcVsPrdPKs27yGvXPc' htt
 ```output
 [
     {
-        "client_id": "8450626399b66f1b31b9827ab5dda43a",
+        "client_id": "3ea987d6abff9ed2f045c3e38898b68c",
         "client_name": "Demo Third-Party App",
         "redirect_uri": "http://localhost:9999/callback",
         "created_by": "root",
-        "created_at": "2026-02-10T05:32:54Z"
+        "created_at": "2026-02-10T06:03:02Z"
     }
 ]
 ```
 
+## Creating sample data
+
+We create a `dogs` table so our scopes reference something real.
+
 ```bash
-curl -s -X POST http://localhost:8585/data/-/create   -H 'Content-Type: application/json'   -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDE2NTB9.4309JE2rhpNBx1DhpkNW6mFo0Zs'   -d '{"table": "dogs", "rows": [{"name": "Cleo", "breed": "Goldendoodle"}, {"name": "Pancakes", "breed": "Corgi"}]}'   | python3 -m json.tool
+curl -s -X POST http://localhost:8585/data/-/create   -H 'Content-Type: application/json'   -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDM0MDZ9.ri_Da2e7TYuH0mGLoeHkPjs4PDY'   -d '{"table": "dogs", "rows": [{"name": "Cleo", "breed": "Goldendoodle"}, {"name": "Pancakes", "breed": "Corgi"}]}'   | python3 -m json.tool
 ```
 
 ```output
@@ -95,49 +83,76 @@ curl -s -X POST http://localhost:8585/data/-/create   -H 'Content-Type: applicat
 }
 ```
 
-Now we visit the authorization URL as the signed-in user. This is what a third-party app would redirect the user to:
+## The OAuth consent screen
+
+In a real flow, a third-party app redirects the user to `/-/oauth/authorize` with the `client_id`, `redirect_uri`, `scope`, `state`, and `response_type=code`. Let's simulate this — requesting three scopes: `view-instance`, `view-database` on `data`, and `view-table` on `data/dogs`.
 
 ```bash
-uvx rodney open 'http://localhost:8585/-/oauth/authorize?client_id=98600e48737272c1629d40fa62390eb7&redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fcallback&scope=%5B%5B%22view-instance%22%5D%2C%5B%22view-database%22%2C%22data%22%5D%2C%5B%22view-table%22%2C%22data%22%2C%22dogs%22%5D%5D&state=demo-state-123&response_type=code'
+uvx rodney open 'http://localhost:8585/-/oauth/authorize?client_id=3ea987d6abff9ed2f045c3e38898b68c&redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fcallback&scope=%5B%5B%22view-instance%22%5D%2C%5B%22view-database%22%2C%22data%22%5D%2C%5B%22view-table%22%2C%22data%22%2C%22dogs%22%5D%5D&state=demo-state-123&response_type=code'
+```
+
+```output
+Authorize Demo Third-Party App
+```
+
+The consent screen now uses the Datasette theme (extends base.html):
+
+```bash {image}
+uvx rodney screenshot -w 1024 -h 600 /home/user/datasette-oauth/demos/initial/consent-screen.png
+```
+
+![ed5eac8e-2026-02-10](ed5eac8e-2026-02-10.png)
+
+The user can uncheck scopes they don't want to grant. Let's uncheck "view-table on data/dogs":
+
+```bash
+uvx rodney click 'input[name="scope_2"]'
+```
+
+```output
+Clicked
 ```
 
 ```bash {image}
-uvx rodney screenshot -w 1024 -h 600 consent-screen.png
+uvx rodney screenshot -w 1024 -h 600 /home/user/datasette-oauth/demos/initial/consent-partial.png
 ```
 
-![a13e78cc-2026-02-10](a13e78cc-2026-02-10.png)
+![6fff09d5-2026-02-10](6fff09d5-2026-02-10.png)
 
-The consent screen shows all three requested permissions with checkboxes. The user can uncheck any they don't want to grant.
-
-Let's uncheck "view-table on data/dogs" to demonstrate partial approval:
-
-```bash {image}
-uvx rodney screenshot -w 1024 -h 600 consent-partial.png
-```
-
-![24f14d95-2026-02-10](24f14d95-2026-02-10.png)
-
-With "view-table on data/dogs" unchecked, we click **Authorize**. The browser redirects to the app's callback URL with an authorization code. Now the third-party app exchanges that code for an access token:
+Now we click **Authorize**. The browser redirects to the callback URL with an authorization code:
 
 ```bash
-curl -s -X POST http://localhost:8585/-/oauth/token   -d 'grant_type=authorization_code'   -d 'code=f1286deaefcfadcbcea5c853d945b5643f8e4c133139ee4db8e6572933f0c916'   -d 'client_id=98600e48737272c1629d40fa62390eb7'   -d 'client_secret=e692f86c44eda16934db2a78920ca38291af65e59f88a3c1521e802c8441f633'   -d 'redirect_uri=http://localhost:9999/callback'   | python3 -m json.tool
+uvx rodney click 'input[type="submit"][value="Authorize"]' && sleep 2 && uvx rodney url
+```
+
+```output
+Clicked
+http://localhost:9999/callback?code=d03fa8810377e72593698f5ba5012fdb80161fc8f9415749b6a410ba48f845af&state=demo-state-123
+```
+
+## Exchanging the code for an access token
+
+The third-party app extracts the `code` from the redirect and exchanges it for an access token:
+
+```bash
+curl -s -X POST http://localhost:8585/-/oauth/token   -d 'grant_type=authorization_code'   -d 'code=d03fa8810377e72593698f5ba5012fdb80161fc8f9415749b6a410ba48f845af'   -d 'client_id=3ea987d6abff9ed2f045c3e38898b68c'   -d 'client_secret=5661ebedb7471cf554d3c836f7d67710a27141dc80178ec0e326e48d4e5c050e'   -d 'redirect_uri=http://localhost:9999/callback'   | python3 -m json.tool
 ```
 
 ```output
 {
-    "access_token": "dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDIxMDksIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.Q7phJ-bwriG5zwEAe3g98nWKQm8",
+    "access_token": "dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDM0OTUsIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.soN_fwPkUgJScnEH1m8IRyDUozo",
     "token_type": "bearer"
 }
 ```
 
 ## Using the access token
 
-The access token is a standard Datasette API token. We can verify it works for the approved scopes and is restricted from the unapproved ones.
+The token is a standard Datasette API token restricted to only the approved scopes.
 
 Accessing the instance (approved — `view-instance`):
 
 ```bash
-curl -s -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDIxMDksIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.Q7phJ-bwriG5zwEAe3g98nWKQm8' http://localhost:8585/.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps({'databases': list(d.get('databases',{}) if isinstance(d.get('databases'),dict) else [db['name'] for db in d.get('databases',[])])}, indent=2))"
+curl -s -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDM0OTUsIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.soN_fwPkUgJScnEH1m8IRyDUozo' http://localhost:8585/.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps({'databases': list(d['databases'].keys())}, indent=2))"
 ```
 
 ```output
@@ -148,27 +163,14 @@ curl -s -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDIxMDksIl9y
 }
 ```
 
-Accessing the database (approved — `view-database` on `data`):
-
-```bash
-curl -s -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDIxMDksIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.Q7phJ-bwriG5zwEAe3g98nWKQm8' http://localhost:8585/data.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps({'database': d.get('database',''), 'tables': [t['name'] for t in d.get('tables',[])]}, indent=2))"
-```
-
-```output
-{
-  "database": "data",
-  "tables": []
-}
-```
-
 Accessing the dogs table (denied — `view-table` on `data/dogs` was unchecked):
 
 ```bash
-curl -s -o /dev/null -w 'HTTP %{http_code}' -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDIxMDksIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.Q7phJ-bwriG5zwEAe3g98nWKQm8' http://localhost:8585/data/dogs.json && echo ' (Forbidden — scope was not approved)'
+curl -s -o /dev/null -w 'HTTP %{http_code}' -H 'Authorization: Bearer dstok_eyJhIjoicm9vdCIsInQiOjE3NzA3MDM0OTUsIl9yIjp7ImEiOlsidmkiXSwiZCI6eyJkYXRhIjpbInZkIl19fX0.soN_fwPkUgJScnEH1m8IRyDUozo' http://localhost:8585/data/dogs.json && echo ' Forbidden - scope was not approved'
 ```
 
 ```output
-HTTP 403 (Forbidden — scope was not approved)
+HTTP 403 Forbidden - scope was not approved
 ```
 
-The token correctly restricts access: `view-instance` and `view-database` on `data` work, but `view-table` on `data/dogs` returns 403 because the user unchecked that scope on the consent screen.
+The token correctly restricts access: `view-instance` and `view-database` on `data` work, but `view-table` on `data/dogs` returns **403** because the user unchecked that scope on the consent screen.
