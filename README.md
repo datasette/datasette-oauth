@@ -12,6 +12,7 @@ Access tokens are standard Datasette restricted API tokens (`dstok_...`), so all
 ## Installation
 
 Install this plugin in the same environment as Datasette.
+
 ```bash
 datasette install datasette-oauth
 ```
@@ -178,12 +179,15 @@ The token is restricted to only the permissions the user approved on the consent
 ## Development
 
 To set up this plugin locally, first checkout the code. You can confirm it is available like this:
+
 ```bash
 cd datasette-oauth
 # Confirm the plugin is visible
 uv run datasette plugins
 ```
+
 To run the tests:
+
 ```bash
 uv run pytest
 ```

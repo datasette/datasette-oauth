@@ -210,6 +210,8 @@ async def _oauth_authorize_get(request, datasette):
             f'<label><input type="checkbox" name="scope_{i}" checked> {label}</label>'
         )
 
+    csrftoken = request.scope.get("csrftoken", lambda: "")()
+
     html = f"""<!DOCTYPE html>
 <html>
 <head><title>Authorize {client["client_name"]}</title></head>
@@ -218,6 +220,7 @@ async def _oauth_authorize_get(request, datasette):
 <p><strong>{client["client_name"]}</strong> is requesting access to your Datasette account.</p>
 <p>It will redirect you to: <code>{redirect_uri}</code></p>
 <form method="post" action="/-/oauth/authorize">
+  <input type="hidden" name="csrftoken" value="{csrftoken}">
   <input type="hidden" name="client_id" value="{client_id}">
   <input type="hidden" name="redirect_uri" value="{redirect_uri}">
   <input type="hidden" name="scope" value='{scope_raw}'>
