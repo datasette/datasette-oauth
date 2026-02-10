@@ -97,6 +97,10 @@ curl -s -X POST http://localhost:8585/data/-/create   -H 'Content-Type: applicat
 
 Now we visit the authorization URL as the signed-in user. This is what a third-party app would redirect the user to:
 
+```bash
+uvx rodney open 'http://localhost:8585/-/oauth/authorize?client_id=98600e48737272c1629d40fa62390eb7&redirect_uri=http%3A%2F%2Flocalhost%3A9999%2Fcallback&scope=%5B%5B%22view-instance%22%5D%2C%5B%22view-database%22%2C%22data%22%5D%2C%5B%22view-table%22%2C%22data%22%2C%22dogs%22%5D%5D&state=demo-state-123&response_type=code'
+```
+
 ```bash {image}
 uvx rodney screenshot -w 1024 -h 600 consent-screen.png
 ```
@@ -113,9 +117,7 @@ uvx rodney screenshot -w 1024 -h 600 consent-partial.png
 
 ![24f14d95-2026-02-10](24f14d95-2026-02-10.png)
 
-With "view-table on data/dogs" unchecked, we click **Authorize**. The browser redirects to the app's callback URL with an authorization code:
-
-After clicking **Authorize**, the browser redirects to the callback URL with the authorization code. Now the third-party app exchanges that code for an access token:
+With "view-table on data/dogs" unchecked, we click **Authorize**. The browser redirects to the app's callback URL with an authorization code. Now the third-party app exchanges that code for an access token:
 
 ```bash
 curl -s -X POST http://localhost:8585/-/oauth/token   -d 'grant_type=authorization_code'   -d 'code=f1286deaefcfadcbcea5c853d945b5643f8e4c133139ee4db8e6572933f0c916'   -d 'client_id=98600e48737272c1629d40fa62390eb7'   -d 'client_secret=e692f86c44eda16934db2a78920ca38291af65e59f88a3c1521e802c8441f633'   -d 'redirect_uri=http://localhost:9999/callback'   | python3 -m json.tool
