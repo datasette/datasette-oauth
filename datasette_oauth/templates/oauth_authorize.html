@@ -16,6 +16,10 @@
   <input type="hidden" name="scope" value="{{ scope_raw }}">
   <input type="hidden" name="state" value="{{ state }}">
   <input type="hidden" name="response_type" value="{{ response_type }}">
+  {% if code_challenge %}
+  <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+  <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+  {% endif %}
 
   <h2>Requested permissions:</h2>
   <ul>
@@ -31,5 +35,343 @@
     <input type="submit" name="deny" value="Deny">
   </p>
 </form>
+
+<!--
+================================================================================
+DEVELOPER DOCUMENTATION: OAuth 2.0 with PKCE
+================================================================================
+
+This template is part of datasette-oauth, which implements an OAuth 2.0
+Authorization Server for Datasette. It supports two authentication flows:
+
+  1. Authorization Code (confidential clients — server-side apps)
+  2. Authorization Code with PKCE (public clients — SPAs, mobile apps, CLIs)
+
+This documentation explains how to implement a client for each flow.
+
+
+## Endpoints
+
+  GET  /-/oauth/clients       List your registered clients
+  POST /-/oauth/clients       Register a new client
+  GET  /-/oauth/authorize     Show the consent screen (this page)
+  POST /-/oauth/authorize     Process the user's consent decision
+  POST /-/oauth/token         Exchange an authorization code for an access token
+
+
+## Flow 1: Authorization Code (Confidential Client)
+
+For server-side apps that can securely store a client_secret.
+
+  Step 1: Register a client
+
+    POST /-/oauth/clients
+    Content-Type: application/x-www-form-urlencoded
+
+    client_name=My+Server+App&redirect_uri=https://myapp.example.com/callback
+
+    Response:
+    {
+      "client_id": "a1b2c3...",
+      "client_secret": "d4e5f6...",      <-- Store securely on your server
+      "client_name": "My Server App",
+      "redirect_uri": "https://myapp.example.com/callback"
+    }
+
+  Step 2: Redirect the user to the authorization endpoint
+
+    GET /-/oauth/authorize?
+      client_id=a1b2c3...
+      &redirect_uri=https://myapp.example.com/callback
+      &scope=[["view-instance"],["view-database","mydb"]]
+      &state=<random-csrf-token>
+      &response_type=code
+
+    The user sees this consent screen and can approve or deny access,
+    and optionally uncheck individual permissions.
+
+  Step 3: Handle the redirect
+
+    After the user approves, they are redirected to:
+
+      https://myapp.example.com/callback?code=abc123...&state=<your-state>
+
+    If the user denies:
+
+      https://myapp.example.com/callback?error=access_denied&state=<your-state>
+
+  Step 4: Exchange the code for an access token
+
+    POST /-/oauth/token
+    Content-Type: application/x-www-form-urlencoded
+
+    grant_type=authorization_code
+    &code=abc123...
+    &client_id=a1b2c3...
+    &client_secret=d4e5f6...
+    &redirect_uri=https://myapp.example.com/callback
+
+    Response:
+    {
+      "access_token": "dstok_...",
+      "token_type": "bearer"
+    }
+
+  Step 5: Use the token
+
+    curl -H "Authorization: Bearer dstok_..." https://datasette.example.com/mydb.json
+
+
+## Flow 2: Authorization Code with PKCE (Public Client)
+
+For JavaScript SPAs, mobile apps, CLI tools, and any client that CANNOT
+securely store a client_secret. Implements RFC 7636.
+
+PKCE (Proof Key for Code Exchange, pronounced "pixie") replaces the
+client_secret with a one-time cryptographic proof. The client generates
+a random secret (code_verifier), sends its hash (code_challenge) during
+authorization, then proves possession of the original secret at token
+exchange time.
+
+  Step 1: Register a client (same as above)
+
+    You still register a client to get a client_id and redirect_uri.
+    You will receive a client_secret, but you won't need to use it —
+    PKCE replaces it for authentication at the token endpoint.
+
+  Step 2: Generate PKCE parameters
+
+    Before redirecting the user, generate a code_verifier and its
+    corresponding code_challenge:
+
+    JavaScript example:
+
+      // Generate a random code_verifier (43-128 characters, URL-safe)
+      function generateCodeVerifier() {
+        const array = new Uint8Array(32);
+        crypto.getRandomValues(array);
+        return btoa(String.fromCharCode(...array))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
+      }
+
+      // Compute the S256 code_challenge from the verifier
+      async function generateCodeChallenge(codeVerifier) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(codeVerifier);
+        const digest = await crypto.subtle.digest('SHA-256', data);
+        return btoa(String.fromCharCode(...new Uint8Array(digest)))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
+      }
+
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+
+      // Store codeVerifier in sessionStorage — you need it later
+      sessionStorage.setItem('pkce_code_verifier', codeVerifier);
+
+    Python example:
+
+      import secrets, hashlib, base64
+
+      code_verifier = secrets.token_urlsafe(32)
+      code_challenge = (
+          base64.urlsafe_b64encode(
+              hashlib.sha256(code_verifier.encode('ascii')).digest()
+          )
+          .rstrip(b'=')
+          .decode('ascii')
+      )
+
+    The algorithm:
+      1. Generate 32+ random bytes
+      2. Base64url-encode them to get the code_verifier
+      3. SHA-256 hash the code_verifier (as ASCII bytes)
+      4. Base64url-encode the hash (without padding) to get the code_challenge
+
+  Step 3: Redirect the user with the code_challenge
+
+    GET /-/oauth/authorize?
+      client_id=a1b2c3...
+      &redirect_uri=https://myapp.example.com/callback
+      &scope=[["view-instance"],["view-database","mydb"]]
+      &state=<random-csrf-token>
+      &response_type=code
+      &code_challenge=<base64url-sha256-hash>
+      &code_challenge_method=S256
+
+    Only S256 is supported (not "plain"). The server stores the
+    code_challenge alongside the authorization code.
+
+  Step 4: Handle the redirect (same as confidential flow)
+
+    https://myapp.example.com/callback?code=abc123...&state=<your-state>
+
+  Step 5: Exchange the code using code_verifier instead of client_secret
+
+    POST /-/oauth/token
+    Content-Type: application/x-www-form-urlencoded
+
+    grant_type=authorization_code
+    &code=abc123...
+    &client_id=a1b2c3...
+    &redirect_uri=https://myapp.example.com/callback
+    &code_verifier=<the-original-random-string>
+
+    Note: NO client_secret is needed. The code_verifier proves you are
+    the same client that initiated the authorization request.
+
+    The server:
+      1. Retrieves the stored code_challenge for this authorization code
+      2. Computes SHA256(code_verifier) and base64url-encodes it
+      3. Compares the result to the stored code_challenge
+      4. If they match, issues the access token
+
+    Response:
+    {
+      "access_token": "dstok_...",
+      "token_type": "bearer"
+    }
+
+    If code_verifier is wrong or missing, the server returns:
+    {
+      "error": "invalid_grant"
+    }
+
+
+## Complete JavaScript SPA Example
+
+    // --- Configuration ---
+    const DATASETTE_URL = 'https://datasette.example.com';
+    const CLIENT_ID = 'your-client-id';
+    const REDIRECT_URI = window.location.origin + '/callback';
+    const SCOPES = JSON.stringify([
+      ['view-instance'],
+      ['view-database', 'mydb']
+    ]);
+
+    // --- Step 1: Start authorization ---
+    async function startAuth() {
+      const codeVerifier = generateCodeVerifier();
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      const state = generateCodeVerifier(); // reuse for random state
+
+      // Save for later
+      sessionStorage.setItem('pkce_code_verifier', codeVerifier);
+      sessionStorage.setItem('oauth_state', state);
+
+      const params = new URLSearchParams({
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT_URI,
+        scope: SCOPES,
+        state: state,
+        response_type: 'code',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256'
+      });
+
+      window.location.href = `${DATASETTE_URL}/-/oauth/authorize?${params}`;
+    }
+
+    // --- Step 2: Handle the callback ---
+    async function handleCallback() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const state = params.get('state');
+      const error = params.get('error');
+
+      if (error) {
+        console.error('Authorization denied:', error);
+        return;
+      }
+
+      // Verify state matches
+      if (state !== sessionStorage.getItem('oauth_state')) {
+        console.error('State mismatch — possible CSRF attack');
+        return;
+      }
+
+      const codeVerifier = sessionStorage.getItem('pkce_code_verifier');
+
+      // Exchange code for token
+      const response = await fetch(`${DATASETTE_URL}/-/oauth/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code,
+          client_id: CLIENT_ID,
+          redirect_uri: REDIRECT_URI,
+          code_verifier: codeVerifier
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.access_token) {
+        // Store token (consider security implications)
+        localStorage.setItem('datasette_token', data.access_token);
+
+        // Clean up PKCE state
+        sessionStorage.removeItem('pkce_code_verifier');
+        sessionStorage.removeItem('oauth_state');
+      }
+    }
+
+    // --- Step 3: Make authenticated API calls ---
+    async function fetchData(path) {
+      const token = localStorage.getItem('datasette_token');
+      const response = await fetch(`${DATASETTE_URL}${path}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      return response.json();
+    }
+
+
+## Scope Format
+
+  Scopes are JSON arrays describing Datasette permissions:
+
+    ["action"]                          Global permission (e.g. view-instance)
+    ["action", "database"]              Database permission (e.g. view-database)
+    ["action", "database", "resource"]  Table permission (e.g. view-table)
+
+  Multiple scopes are nested in an outer array:
+
+    [
+      ["view-instance"],
+      ["view-database", "mydb"],
+      ["view-table", "mydb", "users"]
+    ]
+
+  URL-encode the JSON when passing as a query parameter:
+
+    scope=%5B%5B%22view-instance%22%5D%2C%5B%22view-database%22%2C%22mydb%22%5D%5D
+
+  The resulting access token (dstok_...) is a standard Datasette restricted
+  API token with permissions limited to exactly the scopes the user approved.
+  Users can uncheck scopes on the consent screen to grant fewer permissions
+  than requested.
+
+
+## Security Notes
+
+  - client_secret is stored as a SHA-256 hash, never in plaintext
+  - Authorization codes expire after 10 minutes and are single-use
+  - redirect_uri must exactly match the registered URI (no partial matches)
+  - CSRF protection is enforced on browser-facing endpoints via csrftoken
+  - The token endpoint (/-/oauth/token) skips CSRF — it authenticates via
+    client_secret or PKCE code_verifier instead
+  - Only S256 code_challenge_method is supported (plain is not accepted)
+  - Always use HTTPS in production to protect tokens in transit
+  - For PKCE: store code_verifier in sessionStorage (not localStorage)
+    so it is cleared when the browser tab closes
+  - Validate the state parameter on your callback to prevent CSRF attacks
+
+================================================================================
+-->
 
 {% endblock %}

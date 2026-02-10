@@ -3,6 +3,7 @@ from datasette.utils.asgi import Response
 import json
 import secrets
 import hashlib
+import base64
 import time
 from urllib.parse import urlencode
 
@@ -40,6 +41,13 @@ def _hash_secret(secret):
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
+def _verify_pkce(code_verifier, code_challenge):
+    """Verify a PKCE code_verifier against the stored code_challenge (S256)."""
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return computed == code_challenge
+
+
 @hookimpl
 def startup(datasette):
     async def inner():
@@ -62,7 +70,9 @@ def startup(datasette):
                 scope TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                used INTEGER NOT NULL DEFAULT 0
+                used INTEGER NOT NULL DEFAULT 0,
+                code_challenge TEXT,
+                code_challenge_method TEXT
             );
             """
         )
@@ -187,6 +197,8 @@ async def _oauth_authorize_get(request, datasette):
     scope_raw = request.args.get("scope", "")
     state = request.args.get("state", "")
     response_type = request.args.get("response_type", "")
+    code_challenge = request.args.get("code_challenge", "")
+    code_challenge_method = request.args.get("code_challenge_method", "")
 
     # Validate client
     client = await _get_client(datasette, client_id)
@@ -195,6 +207,18 @@ async def _oauth_authorize_get(request, datasette):
 
     if client["redirect_uri"] != redirect_uri:
         return Response.json({"error": "redirect_uri mismatch"}, status=400)
+
+    # Validate PKCE params
+    if code_challenge and not code_challenge_method:
+        return Response.json(
+            {"error": "code_challenge_method is required with code_challenge"},
+            status=400,
+        )
+    if code_challenge_method and code_challenge_method != "S256":
+        return Response.json(
+            {"error": "Only S256 code_challenge_method is supported"},
+            status=400,
+        )
 
     # Parse scopes
     try:
@@ -214,6 +238,8 @@ async def _oauth_authorize_get(request, datasette):
             "state": state,
             "response_type": response_type,
             "scopes": scope_items,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
         },
         request=request,
     )
@@ -231,6 +257,8 @@ async def _oauth_authorize_post(request, datasette):
     scope_raw = post_vars.get("scope", "")
     state = post_vars.get("state", "")
     deny = post_vars.get("deny", "")
+    code_challenge = post_vars.get("code_challenge", "")
+    code_challenge_method = post_vars.get("code_challenge_method", "")
 
     # Validate client
     client = await _get_client(datasette, client_id)
@@ -270,8 +298,9 @@ async def _oauth_authorize_post(request, datasette):
     internal = datasette.get_internal_database()
     await internal.execute_write(
         "INSERT INTO oauth_authorization_codes "
-        "(code, client_id, actor_id, redirect_uri, scope, created_at, expires_at, used) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+        "(code, client_id, actor_id, redirect_uri, scope, created_at, expires_at, used, "
+        "code_challenge, code_challenge_method) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
         [
             code,
             client_id,
@@ -280,6 +309,8 @@ async def _oauth_authorize_post(request, datasette):
             json.dumps(approved_scopes),
             str(now),
             str(expires_at),
+            code_challenge or None,
+            code_challenge_method or None,
         ],
     )
 
@@ -298,6 +329,7 @@ async def oauth_token(request, datasette):
     client_id = post_vars.get("client_id", "")
     client_secret = post_vars.get("client_secret", "")
     redirect_uri = post_vars.get("redirect_uri", "")
+    code_verifier = post_vars.get("code_verifier", "")
 
     if grant_type != "authorization_code":
         return Response.json({"error": "unsupported_grant_type"}, status=400)
@@ -307,14 +339,11 @@ async def oauth_token(request, datasette):
     if not client:
         return Response.json({"error": "invalid_client"}, status=401)
 
-    # Verify client secret
-    if _hash_secret(client_secret) != client["client_secret_hash"]:
-        return Response.json({"error": "invalid_client"}, status=401)
-
     # Look up authorization code
     internal = datasette.get_internal_database()
     result = await internal.execute(
-        "SELECT code, client_id, actor_id, redirect_uri, scope, created_at, expires_at, used "
+        "SELECT code, client_id, actor_id, redirect_uri, scope, created_at, expires_at, used, "
+        "code_challenge, code_challenge_method "
         "FROM oauth_authorization_codes WHERE code = ?",
         [code],
     )
@@ -323,6 +352,22 @@ async def oauth_token(request, datasette):
         return Response.json({"error": "invalid_grant"}, status=400)
 
     auth_code = dict(rows[0])
+
+    # Authenticate the client: either client_secret or PKCE code_verifier (or both)
+    has_valid_secret = (
+        client_secret and _hash_secret(client_secret) == client["client_secret_hash"]
+    )
+    has_pkce_challenge = bool(auth_code.get("code_challenge"))
+
+    if has_pkce_challenge:
+        # PKCE was used — code_verifier is required
+        if not code_verifier:
+            return Response.json({"error": "invalid_grant"}, status=400)
+        if not _verify_pkce(code_verifier, auth_code["code_challenge"]):
+            return Response.json({"error": "invalid_grant"}, status=400)
+    elif not has_valid_secret:
+        # No PKCE and no valid client_secret — reject
+        return Response.json({"error": "invalid_client"}, status=401)
 
     # Validate the code
     if auth_code["used"]:

@@ -3,6 +3,7 @@ import pytest
 import json
 import secrets
 import hashlib
+import base64
 from urllib.parse import urlencode, urlparse, parse_qs
 
 
@@ -585,3 +586,336 @@ async def test_scope_parsing():
             "logs": ["insert-row"],
         }
     }
+
+
+# --- Phase 7: PKCE (Proof Key for Code Exchange, RFC 7636) ---
+
+
+def generate_pkce_pair():
+    """Generate a code_verifier and its S256 code_challenge."""
+    code_verifier = secrets.token_urlsafe(32)  # 43 chars
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return code_verifier, code_challenge
+
+
+@pytest.mark.asyncio
+async def test_pkce_authorize_stores_challenge(datasette):
+    """Authorize GET should accept code_challenge and code_challenge_method params."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    _, code_challenge = generate_pkce_pair()
+    scope = json.dumps([["view-instance"]])
+    response = await datasette.client.get(
+        "/-/oauth/authorize?"
+        + urlencode({
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        }),
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    # The consent screen should render normally with PKCE params
+    assert "My Test App" in response.text
+
+
+@pytest.mark.asyncio
+async def test_pkce_full_flow(datasette):
+    """Full PKCE flow: authorize with challenge, exchange with verifier."""
+    client_id, client_secret = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    code_verifier, code_challenge = generate_pkce_pair()
+    scope = json.dumps([["view-instance"]])
+
+    # Authorize with code_challenge
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/authorize",
+        {
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "scope_0": "on",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 302
+    code = parse_qs(urlparse(response.headers["location"]).query)["code"][0]
+
+    # Exchange with code_verifier (and client_secret for confidential client)
+    response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": "https://example.com/callback",
+            "code_verifier": code_verifier,
+        }),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["access_token"].startswith("dstok_")
+    assert data["token_type"] == "bearer"
+
+
+@pytest.mark.asyncio
+async def test_pkce_exchange_without_client_secret(datasette):
+    """PKCE allows token exchange without client_secret (public client)."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    code_verifier, code_challenge = generate_pkce_pair()
+    scope = json.dumps([["view-instance"]])
+
+    # Authorize with code_challenge
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/authorize",
+        {
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "scope_0": "on",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 302
+    code = parse_qs(urlparse(response.headers["location"]).query)["code"][0]
+
+    # Exchange with code_verifier but NO client_secret
+    response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "code_verifier": code_verifier,
+        }),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["access_token"].startswith("dstok_")
+
+
+@pytest.mark.asyncio
+async def test_pkce_wrong_verifier(datasette):
+    """Token exchange should fail if code_verifier doesn't match code_challenge."""
+    client_id, client_secret = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    _, code_challenge = generate_pkce_pair()
+    scope = json.dumps([["view-instance"]])
+
+    # Authorize with code_challenge
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/authorize",
+        {
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "scope_0": "on",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 302
+    code = parse_qs(urlparse(response.headers["location"]).query)["code"][0]
+
+    # Exchange with WRONG code_verifier
+    response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": "https://example.com/callback",
+            "code_verifier": "totally-wrong-verifier-value-here",
+        }),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+
+
+@pytest.mark.asyncio
+async def test_pkce_missing_verifier_when_challenge_was_set(datasette):
+    """If code_challenge was provided at auth time, code_verifier is required at token time."""
+    client_id, client_secret = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    _, code_challenge = generate_pkce_pair()
+    scope = json.dumps([["view-instance"]])
+
+    # Authorize with code_challenge
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/authorize",
+        {
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "scope_0": "on",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 302
+    code = parse_qs(urlparse(response.headers["location"]).query)["code"][0]
+
+    # Exchange WITHOUT code_verifier — should fail
+    response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": "https://example.com/callback",
+        }),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+
+
+@pytest.mark.asyncio
+async def test_pkce_no_client_secret_no_challenge_rejected(datasette):
+    """Without PKCE and without client_secret, token exchange must fail."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    scope = json.dumps([["view-instance"]])
+
+    # Authorize without code_challenge
+    code = await authorize_and_get_code(datasette, client_id, scope, cookies)
+
+    # Exchange with neither client_secret nor code_verifier
+    response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+        }),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"] == "invalid_client"
+
+
+@pytest.mark.asyncio
+async def test_pkce_unsupported_challenge_method(datasette):
+    """Only S256 challenge method is supported."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    scope = json.dumps([["view-instance"]])
+    response = await datasette.client.get(
+        "/-/oauth/authorize?"
+        + urlencode({
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "code_challenge": "some-challenge",
+            "code_challenge_method": "plain",
+        }),
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+    assert "S256" in response.json().get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_pkce_challenge_without_method_defaults_to_error(datasette):
+    """code_challenge without code_challenge_method should be rejected."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    scope = json.dumps([["view-instance"]])
+    response = await datasette.client.get(
+        "/-/oauth/authorize?"
+        + urlencode({
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "code_challenge": "some-challenge",
+        }),
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pkce_end_to_end_with_partial_scopes(datasette):
+    """PKCE flow with user unchecking some scopes, no client_secret."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    code_verifier, code_challenge = generate_pkce_pair()
+    scope = json.dumps([["view-instance"], ["view-table", "mydb", "users"]])
+
+    # Authorize with PKCE, only approve scope_0
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/authorize",
+        {
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "scope": scope,
+            "state": "pkce-state",
+            "response_type": "code",
+            "scope_0": "on",
+            # scope_1 is NOT approved
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 302
+    code = parse_qs(urlparse(response.headers["location"]).query)["code"][0]
+
+    # Exchange with code_verifier only (public client)
+    response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode({
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": client_id,
+            "redirect_uri": "https://example.com/callback",
+            "code_verifier": code_verifier,
+        }),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    access_token = response.json()["access_token"]
+
+    # Verify only view-instance is in the token
+    decoded = datasette.unsign(access_token[len("dstok_"):], "token")
+    assert "_r" in decoded
+    assert "a" in decoded["_r"]
+    # Should NOT have resource-level restrictions
+    assert "r" not in decoded["_r"]
