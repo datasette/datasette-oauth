@@ -94,7 +94,18 @@ async def _get_client(datasette, client_id):
     return row
 
 
-async def oauth_clients(request, datasette):
+async def oauth_clients_html(request, datasette):
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    html = await datasette.render_template(
+        "oauth_clients.html",
+        request=request,
+    )
+    return Response.html(html)
+
+
+async def oauth_clients_json(request, datasette):
     if request.method == "GET":
         return await _oauth_clients_list(request, datasette)
     elif request.method == "POST":
@@ -372,7 +383,8 @@ def skip_csrf(scope):
 @hookimpl
 def register_routes(datasette):
     return [
-        (r"^/-/oauth/clients$", oauth_clients),
+        (r"^/-/oauth/clients$", oauth_clients_html),
+        (r"^/-/oauth/clients\.json$", oauth_clients_json),
         (r"^/-/oauth/authorize$", oauth_authorize),
         (r"^/-/oauth/token$", oauth_token),
     ]

@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{% block title %}OAuth Clients{% endblock %}
+
+{% block content %}
+
+<style>
+.oauth-client {
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  padding: 1em;
+  margin-bottom: 1em;
+}
+.oauth-client h3 {
+  margin-top: 0;
+}
+.oauth-client dt {
+  font-weight: bold;
+  margin-top: 0.5em;
+}
+.oauth-client dd {
+  margin-left: 0;
+  margin-bottom: 0.5em;
+}
+.oauth-client dd code {
+  word-break: break-all;
+}
+#register-form label {
+  display: block;
+  margin-bottom: 0.5em;
+  font-weight: bold;
+}
+#register-form input[type="text"],
+#register-form input[type="url"] {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 0.25em;
+  padding: 0.3em;
+  box-sizing: border-box;
+}
+#register-form .form-field {
+  margin-bottom: 1em;
+}
+#new-client-details {
+  border: 2px solid #c06000;
+  background: #fff8f0;
+  border-radius: 5px;
+  padding: 1em;
+  margin-bottom: 1em;
+}
+#new-client-details dt {
+  font-weight: bold;
+  margin-top: 0.5em;
+}
+#new-client-details dd {
+  margin-left: 0;
+  margin-bottom: 0.5em;
+}
+#new-client-details dd code {
+  word-break: break-all;
+}
+</style>
+
+<h1>OAuth Clients</h1>
+
+<div id="new-client-details" style="display: none;">
+  <h2>Client registered</h2>
+  <p><strong>Save the client secret now — it will not be shown again.</strong></p>
+  <dl>
+    <dt>Client ID</dt>
+    <dd><code id="new-client-id"></code></dd>
+    <dt>Client Secret</dt>
+    <dd><code id="new-client-secret"></code></dd>
+  </dl>
+</div>
+
+<div id="clients-list"><p>Loading...</p></div>
+
+<details id="developer-instructions">
+<summary>Developer instructions</summary>
+
+<p>This Datasette instance supports OAuth 2.0 Authorization Code flow.
+Third-party applications can request scoped access tokens on behalf of users.</p>
+
+<h3>1. Register a client</h3>
+
+<p>Use the form below to register your application. You will receive a
+<strong>client ID</strong> and <strong>client secret</strong>. The secret is
+only shown once — store it securely.</p>
+
+<h3>2. Redirect users to the authorization URL</h3>
+
+<p>Send users to the authorization endpoint with these query parameters:</p>
+
+<pre><code>GET /-/oauth/authorize
+  ?client_id=YOUR_CLIENT_ID
+  &amp;redirect_uri=YOUR_REGISTERED_REDIRECT_URI
+  &amp;response_type=code
+  &amp;scope=SCOPES_JSON
+  &amp;state=RANDOM_STATE</code></pre>
+
+<p>The <code>scope</code> parameter is a JSON array of scope arrays. Each scope
+array has 1–3 elements:</p>
+
+<ul>
+  <li><code>["action"]</code> — global permission (e.g. <code>["view-instance"]</code>)</li>
+  <li><code>["action", "database"]</code> — database-level (e.g. <code>["view-database", "mydb"]</code>)</li>
+  <li><code>["action", "database", "resource"]</code> — resource-level (e.g. <code>["view-table", "mydb", "users"]</code>)</li>
+</ul>
+
+<p>Example: <code>[["view-instance"], ["view-table", "mydb", "users"]]</code></p>
+
+<p>The <code>state</code> parameter should be a random string your app generates
+to prevent CSRF. Verify it matches when receiving the callback.</p>
+
+<h3>3. Handle the callback</h3>
+
+<p>After the user approves (or denies), they are redirected to your
+<code>redirect_uri</code> with query parameters:</p>
+
+<ul>
+  <li>On approval: <code>?code=AUTHORIZATION_CODE&amp;state=YOUR_STATE</code></li>
+  <li>On denial: <code>?error=access_denied&amp;state=YOUR_STATE</code></li>
+</ul>
+
+<h3>4. Exchange the code for an access token</h3>
+
+<p>Make a server-side POST to the token endpoint:</p>
+
+<pre><code>POST /-/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&amp;code=AUTHORIZATION_CODE
+&amp;client_id=YOUR_CLIENT_ID
+&amp;client_secret=YOUR_CLIENT_SECRET
+&amp;redirect_uri=YOUR_REGISTERED_REDIRECT_URI</code></pre>
+
+<p>On success, you will receive:</p>
+
+<pre><code>{"access_token": "dstok_...", "token_type": "bearer"}</code></pre>
+
+<h3>5. Use the access token</h3>
+
+<p>Include the token in API requests using the <code>Authorization</code> header:</p>
+
+<pre><code>Authorization: Bearer dstok_...</code></pre>
+
+<p>The token is scoped to only the permissions the user approved.
+Authorization codes expire after 10 minutes and can only be used once.</p>
+
+</details>
+
+<h2>Register a new client</h2>
+
+<form id="register-form">
+  <div class="form-field">
+    <label for="client_name">Client name</label>
+    <input type="text" name="client_name" id="client_name" required>
+  </div>
+  <div class="form-field">
+    <label for="redirect_uri">Redirect URI</label>
+    <input type="url" name="redirect_uri" id="redirect_uri" required>
+  </div>
+  <p><input type="submit" value="Register client"></p>
+</form>
+
+<script>
+var BASE_URL = location.protocol + "//" + location.host;
+
+function getCsrfToken() {
+  var match = document.cookie.match(/ds_csrftoken=([^;]+)/);
+  return match ? match[1] : "";
+}
+
+function authorizeUrl(client) {
+  var params = new URLSearchParams();
+  params.set("client_id", client.client_id);
+  params.set("redirect_uri", client.redirect_uri);
+  params.set("response_type", "code");
+  params.set("scope", "SCOPES");
+  params.set("state", "STATE");
+  return BASE_URL + "/-/oauth/authorize?" + params.toString();
+}
+
+function loadClients() {
+  fetch("/-/oauth/clients.json", {credentials: "same-origin"})
+    .then(function(r) { return r.json(); })
+    .then(function(clients) {
+      var el = document.getElementById("clients-list");
+      if (clients.length === 0) {
+        el.innerHTML = "<p>No clients registered yet.</p>";
+        return;
+      }
+      var html = "";
+      clients.forEach(function(c) {
+        html += '<div class="oauth-client"><h3>' + htmlEscape(c.client_name) + "</h3><dl>";
+        html += "<dt>Client ID</dt><dd><code>" + htmlEscape(c.client_id) + "</code></dd>";
+        html += "<dt>Redirect URI</dt><dd><code>" + htmlEscape(c.redirect_uri) + "</code></dd>";
+        html += "<dt>Created</dt><dd>" + htmlEscape(c.created_at) + "</dd>";
+        html += "<dt>Authorization URL</dt><dd><code>" + htmlEscape(authorizeUrl(c)) + "</code></dd>";
+        html += "</dl></div>";
+      });
+      el.innerHTML = html;
+    });
+}
+
+function htmlEscape(str) {
+  var div = document.createElement("div");
+  div.appendChild(document.createTextNode(str));
+  return div.innerHTML;
+}
+
+document.getElementById("register-form").addEventListener("submit", function(ev) {
+  ev.preventDefault();
+  var form = ev.target;
+  var body = new URLSearchParams();
+  body.set("client_name", form.client_name.value);
+  body.set("redirect_uri", form.redirect_uri.value);
+  body.set("csrftoken", getCsrfToken());
+  fetch("/-/oauth/clients.json", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {"Content-Type": "application/x-www-form-urlencoded"},
+    body: body.toString()
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) {
+        alert("Error: " + data.error);
+        return;
+      }
+      document.getElementById("new-client-id").textContent = data.client_id;
+      document.getElementById("new-client-secret").textContent = data.client_secret;
+      document.getElementById("new-client-details").style.display = "block";
+      form.reset();
+      loadClients();
+    });
+});
+
+loadClients();
+</script>
+
+{% endblock %}

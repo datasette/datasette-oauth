@@ -75,7 +75,7 @@ async def test_startup_creates_tables(datasette):
 
 @pytest.mark.asyncio
 async def test_register_client_requires_auth(datasette):
-    response = await csrf_post(datasette, "/-/oauth/clients", {})
+    response = await csrf_post(datasette, "/-/oauth/clients.json", {})
     assert response.status_code == 403
 
 
@@ -84,7 +84,7 @@ async def test_register_client(datasette):
     cookies = auth_cookies(datasette)
     response = await csrf_post(
         datasette,
-        "/-/oauth/clients",
+        "/-/oauth/clients.json",
         {
             "client_name": "My Test App",
             "redirect_uri": "https://example.com/callback",
@@ -107,7 +107,7 @@ async def test_register_client_missing_fields(datasette):
     cookies = auth_cookies(datasette)
     response = await csrf_post(
         datasette,
-        "/-/oauth/clients",
+        "/-/oauth/clients.json",
         {"client_name": "My Test App"},
         cookies=cookies,
     )
@@ -120,7 +120,7 @@ async def test_list_clients(datasette):
     # Register a client first
     await csrf_post(
         datasette,
-        "/-/oauth/clients",
+        "/-/oauth/clients.json",
         {
             "client_name": "My Test App",
             "redirect_uri": "https://example.com/callback",
@@ -128,7 +128,7 @@ async def test_list_clients(datasette):
         cookies=cookies,
     )
     # List clients
-    response = await datasette.client.get("/-/oauth/clients", cookies=cookies)
+    response = await datasette.client.get("/-/oauth/clients.json", cookies=cookies)
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
@@ -140,6 +140,25 @@ async def test_list_clients(datasette):
 
 @pytest.mark.asyncio
 async def test_list_clients_requires_auth(datasette):
+    response = await datasette.client.get("/-/oauth/clients.json")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_clients_html_page(datasette):
+    cookies = auth_cookies(datasette)
+    response = await datasette.client.get("/-/oauth/clients", cookies=cookies)
+    assert response.status_code == 200
+    html = response.text
+    assert "<h1>OAuth Clients</h1>" in html
+    assert 'id="clients-list"' in html
+    assert 'name="client_name"' in html
+    assert 'name="redirect_uri"' in html
+    assert "/-/oauth/clients.json" in html
+
+
+@pytest.mark.asyncio
+async def test_clients_html_page_requires_auth(datasette):
     response = await datasette.client.get("/-/oauth/clients")
     assert response.status_code == 403
 
@@ -152,7 +171,7 @@ async def register_client(datasette, actor_id="test-user"):
     cookies = auth_cookies(datasette, actor_id)
     response = await csrf_post(
         datasette,
-        "/-/oauth/clients",
+        "/-/oauth/clients.json",
         {
             "client_name": "My Test App",
             "redirect_uri": "https://example.com/callback",
