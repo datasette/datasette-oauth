@@ -189,13 +189,15 @@ async def test_authorize_get_shows_consent(datasette):
     scope = json.dumps([["view-instance"], ["view-table", "mydb", "users"]])
     response = await datasette.client.get(
         "/-/oauth/authorize?"
-        + urlencode({
-            "client_id": client_id,
-            "redirect_uri": "https://example.com/callback",
-            "scope": scope,
-            "state": "random-state",
-            "response_type": "code",
-        }),
+        + urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": "https://example.com/callback",
+                "scope": scope,
+                "state": "random-state",
+                "response_type": "code",
+            }
+        ),
         cookies=cookies,
     )
     assert response.status_code == 200
@@ -211,13 +213,15 @@ async def test_authorize_get_requires_auth(datasette):
     scope = json.dumps([["view-instance"]])
     response = await datasette.client.get(
         "/-/oauth/authorize?"
-        + urlencode({
-            "client_id": client_id,
-            "redirect_uri": "https://example.com/callback",
-            "scope": scope,
-            "state": "random-state",
-            "response_type": "code",
-        }),
+        + urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": "https://example.com/callback",
+                "scope": scope,
+                "state": "random-state",
+                "response_type": "code",
+            }
+        ),
     )
     assert response.status_code == 403
 
@@ -228,13 +232,15 @@ async def test_authorize_get_invalid_client(datasette):
     scope = json.dumps([["view-instance"]])
     response = await datasette.client.get(
         "/-/oauth/authorize?"
-        + urlencode({
-            "client_id": "nonexistent",
-            "redirect_uri": "https://example.com/callback",
-            "scope": scope,
-            "state": "random-state",
-            "response_type": "code",
-        }),
+        + urlencode(
+            {
+                "client_id": "nonexistent",
+                "redirect_uri": "https://example.com/callback",
+                "scope": scope,
+                "state": "random-state",
+                "response_type": "code",
+            }
+        ),
         cookies=cookies,
     )
     assert response.status_code == 400
@@ -247,13 +253,15 @@ async def test_authorize_get_redirect_uri_mismatch(datasette):
     scope = json.dumps([["view-instance"]])
     response = await datasette.client.get(
         "/-/oauth/authorize?"
-        + urlencode({
-            "client_id": client_id,
-            "redirect_uri": "https://evil.com/callback",
-            "scope": scope,
-            "state": "random-state",
-            "response_type": "code",
-        }),
+        + urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": "https://evil.com/callback",
+                "scope": scope,
+                "state": "random-state",
+                "response_type": "code",
+            }
+        ),
         cookies=cookies,
     )
     assert response.status_code == 400
@@ -366,13 +374,15 @@ async def test_authorize_post_partial_scopes(datasette):
     code = qs["code"][0]
     token_response = await datasette.client.post(
         "/-/oauth/token",
-        content=urlencode({
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": "https://example.com/callback",
-        }),
+        content=urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": "https://example.com/callback",
+            }
+        ),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
     assert token_response.status_code == 200
@@ -383,7 +393,7 @@ async def test_authorize_post_partial_scopes(datasette):
     assert access_token.startswith("dstok_")
 
     # Verify the token's restrictions by decoding it
-    decoded = datasette.unsign(access_token[len("dstok_"):], "token")
+    decoded = datasette.unsign(access_token[len("dstok_") :], "token")
     assert "_r" in decoded
     # Should only have view-instance in global restrictions
     assert "a" in decoded["_r"]
@@ -404,13 +414,15 @@ async def test_token_exchange(datasette):
     # Exchange code for token (no CSRF needed - skip_csrf for this endpoint)
     response = await datasette.client.post(
         "/-/oauth/token",
-        content=urlencode({
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": "https://example.com/callback",
-        }),
+        content=urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": "https://example.com/callback",
+            }
+        ),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
     assert response.status_code == 200
@@ -429,13 +441,15 @@ async def test_token_exchange_wrong_secret(datasette):
 
     response = await datasette.client.post(
         "/-/oauth/token",
-        content=urlencode({
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": client_id,
-            "client_secret": "wrong-secret",
-            "redirect_uri": "https://example.com/callback",
-        }),
+        content=urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "client_secret": "wrong-secret",
+                "redirect_uri": "https://example.com/callback",
+            }
+        ),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
     assert response.status_code == 401
@@ -483,13 +497,15 @@ async def test_token_exchange_redirect_uri_mismatch(datasette):
 
     response = await datasette.client.post(
         "/-/oauth/token",
-        content=urlencode({
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": "https://evil.com/callback",
-        }),
+        content=urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": "https://evil.com/callback",
+            }
+        ),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
     assert response.status_code == 400
@@ -504,22 +520,26 @@ async def test_full_oauth_flow_with_restricted_token(datasette):
     client_id, client_secret = await register_client(datasette)
     cookies = auth_cookies(datasette)
 
-    scope = json.dumps([
-        ["view-instance"],
-        ["view-database", "mydb"],
-        ["view-table", "mydb", "users"],
-    ])
+    scope = json.dumps(
+        [
+            ["view-instance"],
+            ["view-database", "mydb"],
+            ["view-table", "mydb", "users"],
+        ]
+    )
 
     # Step 1: User visits authorize endpoint
     response = await datasette.client.get(
         "/-/oauth/authorize?"
-        + urlencode({
-            "client_id": client_id,
-            "redirect_uri": "https://example.com/callback",
-            "scope": scope,
-            "state": "xyz",
-            "response_type": "code",
-        }),
+        + urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": "https://example.com/callback",
+                "scope": scope,
+                "state": "xyz",
+                "response_type": "code",
+            }
+        ),
         cookies=cookies,
     )
     assert response.status_code == 200
@@ -546,13 +566,15 @@ async def test_full_oauth_flow_with_restricted_token(datasette):
     # Step 3: App exchanges code for token
     response = await datasette.client.post(
         "/-/oauth/token",
-        content=urlencode({
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": "https://example.com/callback",
-        }),
+        content=urlencode(
+            {
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": "https://example.com/callback",
+            }
+        ),
         headers={"content-type": "application/x-www-form-urlencoded"},
     )
     assert response.status_code == 200
@@ -560,7 +582,7 @@ async def test_full_oauth_flow_with_restricted_token(datasette):
     access_token = token_data["access_token"]
 
     # Step 4: Verify the token encodes the right restrictions
-    decoded = datasette.unsign(access_token[len("dstok_"):], "token")
+    decoded = datasette.unsign(access_token[len("dstok_") :], "token")
     assert decoded["a"] == "test-user"
     assert "_r" in decoded
 

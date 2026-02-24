@@ -29,9 +29,9 @@ def parse_scopes(scopes):
             restrict_database.setdefault(database, []).append(action)
         elif len(scope) == 3:
             action, database, resource = scope
-            restrict_resource.setdefault(database, {}).setdefault(
-                resource, []
-            ).append(action)
+            restrict_resource.setdefault(database, {}).setdefault(resource, []).append(
+                action
+            )
 
     return restrict_all, restrict_database, restrict_resource
 
@@ -44,8 +44,7 @@ def _hash_secret(secret):
 def startup(datasette):
     async def inner():
         internal = datasette.get_internal_database()
-        await internal.execute_write_script(
-            """
+        await internal.execute_write_script("""
             CREATE TABLE IF NOT EXISTS oauth_clients (
                 client_id TEXT PRIMARY KEY,
                 client_secret_hash TEXT NOT NULL,
@@ -64,8 +63,7 @@ def startup(datasette):
                 expires_at TEXT NOT NULL,
                 used INTEGER NOT NULL DEFAULT 0
             );
-            """
-        )
+            """)
 
     return inner
 
