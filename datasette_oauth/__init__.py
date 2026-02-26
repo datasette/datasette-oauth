@@ -511,6 +511,8 @@ async def oauth_token(request, datasette):
     grant_type = post_vars.get("grant_type", "")
 
     if grant_type == "urn:ietf:params:oauth:grant-type:device_code":
+        if not _device_flow_enabled(datasette):
+            return Response.json({"error": "Device flow is not enabled"}, status=403)
         return await _oauth_token_device_code(post_vars, datasette)
 
     code = post_vars.get("code", "")
@@ -597,10 +599,18 @@ def _generate_user_code():
     return f"{part1}-{part2}"
 
 
+def _device_flow_enabled(datasette):
+    config = datasette.plugin_config("datasette-oauth") or {}
+    return config.get("enable_device_flow", False)
+
+
 async def oauth_device(request, datasette):
     """POST /-/oauth/device — initiate device authorization flow."""
     if request.method != "POST":
         return Response.json({"error": "Method not allowed"}, status=405)
+
+    if not _device_flow_enabled(datasette):
+        return Response.json({"error": "Device flow is not enabled"}, status=403)
 
     post_vars = await request.post_vars()
     scope_raw = post_vars.get("scope", "[]")
@@ -640,6 +650,8 @@ async def oauth_device(request, datasette):
 
 async def oauth_device_verify(request, datasette):
     """GET/POST /-/oauth/device/verify — user enters code and approves."""
+    if not _device_flow_enabled(datasette):
+        return Response.json({"error": "Device flow is not enabled"}, status=403)
     if request.method == "GET":
         return await _oauth_device_verify_get(request, datasette)
     elif request.method == "POST":
@@ -651,9 +663,7 @@ async def _require_device_tokens(request, datasette):
     auth_error = _require_auth(request)
     if auth_error:
         return auth_error
-    if not await datasette.allowed(
-        actor=request.actor, action="oauth-device-tokens"
-    ):
+    if not await datasette.allowed(actor=request.actor, action="oauth-device-tokens"):
         return Response.json({"error": "Permission denied"}, status=403)
     return None
 

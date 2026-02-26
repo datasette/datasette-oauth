@@ -15,7 +15,12 @@ def datasette():
             "permissions": {
                 "oauth-manage-clients": {"id": "*"},
                 "oauth-device-tokens": {"id": "*"},
-            }
+            },
+            "plugins": {
+                "datasette-oauth": {
+                    "enable_device_flow": True,
+                }
+            },
         },
     )
 
@@ -1024,7 +1029,10 @@ async def test_device_flow_code_race_only_one_succeeds(datasette):
 @pytest.mark.asyncio
 async def test_device_verify_requires_oauth_device_tokens_permission():
     """Device verify GET should require oauth-device-tokens permission."""
-    ds = Datasette(memory=True)
+    ds = Datasette(
+        memory=True,
+        config={"plugins": {"datasette-oauth": {"enable_device_flow": True}}},
+    )
     cookies = auth_cookies(ds)
     response = await ds.client.get("/-/oauth/device/verify", cookies=cookies)
     assert response.status_code == 403
@@ -1033,7 +1041,10 @@ async def test_device_verify_requires_oauth_device_tokens_permission():
 @pytest.mark.asyncio
 async def test_device_verify_post_requires_oauth_device_tokens_permission():
     """Device verify POST should require oauth-device-tokens permission."""
-    ds = Datasette(memory=True)
+    ds = Datasette(
+        memory=True,
+        config={"plugins": {"datasette-oauth": {"enable_device_flow": True}}},
+    )
     cookies = auth_cookies(ds)
     response = await csrf_post(
         ds, "/-/oauth/device/verify", {"code": "ABCD-EFGH"}, cookies=cookies
@@ -1058,7 +1069,12 @@ async def test_device_tokens_denied_for_root_by_default():
             "permissions": {
                 "oauth-device-tokens": {"id": "*"},
                 "oauth-manage-clients": {"id": "*"},
-            }
+            },
+            "plugins": {
+                "datasette-oauth": {
+                    "enable_device_flow": True,
+                }
+            },
         },
     )
     ds.root_enabled = True
@@ -1080,6 +1096,7 @@ async def test_device_tokens_allowed_for_root_with_plugin_config():
             "plugins": {
                 "datasette-oauth": {
                     "allow_root_device_tokens": True,
+                    "enable_device_flow": True,
                 }
             },
         },
@@ -1280,3 +1297,80 @@ async def test_device_flow_custom_time_limit(datasette):
     assert token_data["expires_in"] == 86400
     decoded = datasette.unsign(token_data["access_token"][len("dstok_") :], "token")
     assert decoded["d"] == 86400
+
+
+# --- enable_device_flow setting ---
+
+
+@pytest.mark.asyncio
+async def test_device_flow_disabled_by_default():
+    """Device endpoints should return 403 when enable_device_flow is not set."""
+    ds = Datasette(
+        memory=True,
+        config={
+            "permissions": {
+                "oauth-manage-clients": {"id": "*"},
+                "oauth-device-tokens": {"id": "*"},
+            },
+        },
+    )
+    # POST /-/oauth/device should be blocked
+    response = await ds.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": "[]"}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"] == "Device flow is not enabled"
+
+    # GET /-/oauth/device/verify should be blocked
+    cookies = auth_cookies(ds)
+    response = await ds.client.get("/-/oauth/device/verify", cookies=cookies)
+    assert response.status_code == 403
+    assert response.json()["error"] == "Device flow is not enabled"
+
+    # POST /-/oauth/token with device_code grant type should be blocked
+    response = await ds.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": "fake",
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"] == "Device flow is not enabled"
+
+
+@pytest.mark.asyncio
+async def test_device_flow_enabled_with_setting():
+    """Device endpoints should work when enable_device_flow is true."""
+    ds = Datasette(
+        memory=True,
+        config={
+            "permissions": {
+                "oauth-manage-clients": {"id": "*"},
+                "oauth-device-tokens": {"id": "*"},
+            },
+            "plugins": {
+                "datasette-oauth": {
+                    "enable_device_flow": True,
+                }
+            },
+        },
+    )
+    # POST /-/oauth/device should work
+    response = await ds.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": "[]"}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    assert "device_code" in response.json()
+
+    # GET /-/oauth/device/verify should work
+    cookies = auth_cookies(ds)
+    response = await ds.client.get("/-/oauth/device/verify", cookies=cookies)
+    assert response.status_code == 200
