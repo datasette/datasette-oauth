@@ -1,4 +1,5 @@
 from datasette import hookimpl
+from datasette.tokens import TokenRestrictions
 from datasette.utils.asgi import Response
 import json
 import secrets
@@ -8,33 +9,31 @@ import time
 from urllib.parse import urlencode
 
 
-def parse_scopes(scopes):
-    """Parse a list of scope arrays into Datasette token restriction args.
+def build_restrictions(scopes):
+    """Parse a list of scope arrays into a TokenRestrictions object.
 
     Each scope is a JSON array:
-      ["action"]                    -> restrict_all
-      ["action", "database"]        -> restrict_database
-      ["action", "database", "resource"] -> restrict_resource
+      ["action"]                    -> allow_all
+      ["action", "database"]        -> allow_database
+      ["action", "database", "resource"] -> allow_resource
 
-    Returns (restrict_all, restrict_database, restrict_resource).
+    Returns a TokenRestrictions instance, or None if no scopes.
     """
-    restrict_all = []
-    restrict_database = {}
-    restrict_resource = {}
+    if not scopes:
+        return None
 
+    restrictions = TokenRestrictions()
     for scope in scopes:
         if len(scope) == 1:
-            restrict_all.append(scope[0])
+            restrictions = restrictions.allow_all(scope[0])
         elif len(scope) == 2:
             action, database = scope
-            restrict_database.setdefault(database, []).append(action)
+            restrictions = restrictions.allow_database(database, action)
         elif len(scope) == 3:
             action, database, resource = scope
-            restrict_resource.setdefault(database, {}).setdefault(resource, []).append(
-                action
-            )
+            restrictions = restrictions.allow_resource(database, resource, action)
 
-    return restrict_all, restrict_database, restrict_resource
+    return restrictions
 
 
 def _hash_secret(secret):
@@ -368,13 +367,11 @@ async def oauth_token(request, datasette):
 
     # Parse approved scopes and create a restricted token
     approved_scopes = json.loads(auth_code["scope"])
-    restrict_all, restrict_database, restrict_resource = parse_scopes(approved_scopes)
+    restrictions = build_restrictions(approved_scopes)
 
-    token = datasette.create_token(
+    token = await datasette.create_token(
         auth_code["actor_id"],
-        restrict_all=restrict_all or None,
-        restrict_database=restrict_database or None,
-        restrict_resource=restrict_resource or None,
+        restrictions=restrictions,
     )
 
     return Response.json(
@@ -574,19 +571,11 @@ async def _oauth_token_device_code(post_vars, datasette):
     # status == "approved" — issue a token
     approved_scopes = json.loads(device_row["scope"])
 
-    if approved_scopes:
-        restrict_all, restrict_database, restrict_resource = parse_scopes(
-            approved_scopes
-        )
-        token = datasette.create_token(
-            device_row["actor_id"],
-            restrict_all=restrict_all or None,
-            restrict_database=restrict_database or None,
-            restrict_resource=restrict_resource or None,
-        )
-    else:
-        # No scopes requested — unrestricted token
-        token = datasette.create_token(device_row["actor_id"])
+    restrictions = build_restrictions(approved_scopes)
+    token = await datasette.create_token(
+        device_row["actor_id"],
+        restrictions=restrictions,
+    )
 
     # Mark as used so the device_code can't be reused
     await internal.execute_write(

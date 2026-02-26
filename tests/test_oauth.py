@@ -608,8 +608,8 @@ async def test_authorize_post_requires_auth(datasette):
 
 @pytest.mark.asyncio
 async def test_scope_parsing():
-    """Test that scope JSON arrays are parsed correctly into token restrictions."""
-    from datasette_oauth import parse_scopes
+    """Test that scope JSON arrays are parsed correctly into TokenRestrictions."""
+    from datasette_oauth import build_restrictions
 
     scopes = [
         ["view-instance"],
@@ -617,10 +617,11 @@ async def test_scope_parsing():
         ["view-table", "mydb", "users"],
         ["insert-row", "mydb", "logs"],
     ]
-    restrict_all, restrict_database, restrict_resource = parse_scopes(scopes)
-    assert restrict_all == ["view-instance"]
-    assert restrict_database == {"mydb": ["view-database"]}
-    assert restrict_resource == {
+    restrictions = build_restrictions(scopes)
+    assert restrictions is not None
+    assert restrictions.all == ["view-instance"]
+    assert restrictions.database == {"mydb": ["view-database"]}
+    assert restrictions.resource == {
         "mydb": {
             "users": ["view-table"],
             "logs": ["insert-row"],
