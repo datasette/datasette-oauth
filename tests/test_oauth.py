@@ -8,7 +8,14 @@ from urllib.parse import urlencode, urlparse, parse_qs
 
 @pytest.fixture
 def datasette():
-    return Datasette(memory=True)
+    return Datasette(
+        memory=True,
+        config={
+            "permissions": {
+                "oauth-manage-clients": {"id": "*"},
+            }
+        },
+    )
 
 
 def actor_cookie(ds, actor):
@@ -160,6 +167,70 @@ async def test_clients_html_page(datasette):
 @pytest.mark.asyncio
 async def test_clients_html_page_requires_auth(datasette):
     response = await datasette.client.get("/-/oauth/clients")
+    assert response.status_code == 403
+
+
+# --- Permission checks ---
+
+
+@pytest.fixture
+def datasette_no_perms():
+    return Datasette(memory=True)
+
+
+@pytest.mark.asyncio
+async def test_clients_html_requires_permission(datasette_no_perms):
+    cookies = auth_cookies(datasette_no_perms)
+    response = await datasette_no_perms.client.get("/-/oauth/clients", cookies=cookies)
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_clients_requires_permission(datasette_no_perms):
+    cookies = auth_cookies(datasette_no_perms)
+    response = await datasette_no_perms.client.get(
+        "/-/oauth/clients.json", cookies=cookies
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_register_client_requires_permission(datasette_no_perms):
+    cookies = auth_cookies(datasette_no_perms)
+    response = await csrf_post(
+        datasette_no_perms,
+        "/-/oauth/clients.json",
+        {
+            "client_name": "My Test App",
+            "redirect_uri": "https://example.com/callback",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_edit_client_requires_permission(datasette, datasette_no_perms):
+    # Register a client with the permissioned datasette
+    client_id, _ = await register_client(datasette)
+    # Try editing with no permission
+    cookies = auth_cookies(datasette_no_perms)
+    response = await csrf_post(
+        datasette_no_perms,
+        f"/-/oauth/clients/{client_id}.json",
+        {"client_name": "Hacked", "redirect_uri": "https://evil.com/cb"},
+        cookies=cookies,
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_delete_client_requires_permission(datasette, datasette_no_perms):
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette_no_perms)
+    response = await datasette_no_perms.client.delete(
+        f"/-/oauth/clients/{client_id}.json", cookies=cookies
+    )
     assert response.status_code == 403
 
 
@@ -821,6 +892,125 @@ async def test_device_flow_code_reuse(datasette):
     )
     assert token_response2.status_code == 400
     assert token_response2.json()["error"] == "invalid_grant"
+
+
+# --- Client Edit & Delete ---
+
+
+@pytest.mark.asyncio
+async def test_delete_client(datasette):
+    """Owner can delete their own client."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    response = await datasette.client.delete(
+        f"/-/oauth/clients/{client_id}.json", cookies=cookies
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    # Client should no longer appear in list
+    list_response = await datasette.client.get("/-/oauth/clients.json", cookies=cookies)
+    assert len(list_response.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_client_requires_auth(datasette):
+    client_id, _ = await register_client(datasette)
+    response = await datasette.client.delete(f"/-/oauth/clients/{client_id}.json")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_delete_client_wrong_owner(datasette):
+    """Users cannot delete clients they don't own."""
+    client_id, _ = await register_client(datasette, actor_id="user-a")
+    cookies = auth_cookies(datasette, actor_id="user-b")
+    response = await datasette.client.delete(
+        f"/-/oauth/clients/{client_id}.json", cookies=cookies
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_delete_client_not_found(datasette):
+    cookies = auth_cookies(datasette)
+    response = await datasette.client.delete(
+        "/-/oauth/clients/nonexistent.json", cookies=cookies
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_edit_client(datasette):
+    """Owner can update client_name and redirect_uri."""
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    response = await csrf_post(
+        datasette,
+        f"/-/oauth/clients/{client_id}.json",
+        {
+            "client_name": "Updated App",
+            "redirect_uri": "https://new.example.com/callback",
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["client_name"] == "Updated App"
+    assert data["redirect_uri"] == "https://new.example.com/callback"
+    # Verify via list
+    list_response = await datasette.client.get("/-/oauth/clients.json", cookies=cookies)
+    client = list_response.json()[0]
+    assert client["client_name"] == "Updated App"
+    assert client["redirect_uri"] == "https://new.example.com/callback"
+
+
+@pytest.mark.asyncio
+async def test_edit_client_requires_auth(datasette):
+    client_id, _ = await register_client(datasette)
+    response = await csrf_post(
+        datasette,
+        f"/-/oauth/clients/{client_id}.json",
+        {"client_name": "Updated"},
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_edit_client_wrong_owner(datasette):
+    client_id, _ = await register_client(datasette, actor_id="user-a")
+    cookies = auth_cookies(datasette, actor_id="user-b")
+    response = await csrf_post(
+        datasette,
+        f"/-/oauth/clients/{client_id}.json",
+        {"client_name": "Hacked"},
+        cookies=cookies,
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_edit_client_missing_fields(datasette):
+    client_id, _ = await register_client(datasette)
+    cookies = auth_cookies(datasette)
+    response = await csrf_post(
+        datasette,
+        f"/-/oauth/clients/{client_id}.json",
+        {},
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_edit_client_not_found(datasette):
+    cookies = auth_cookies(datasette)
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/clients/nonexistent.json",
+        {"client_name": "X", "redirect_uri": "https://x.com/cb"},
+        cookies=cookies,
+    )
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

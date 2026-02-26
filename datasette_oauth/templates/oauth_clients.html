@@ -25,6 +25,53 @@
 .oauth-client dd code {
   word-break: break-all;
 }
+.oauth-client .client-actions {
+  margin-top: 1em;
+  display: flex;
+  gap: 0.5em;
+}
+.oauth-client .client-actions button {
+  padding: 0.3em 0.8em;
+  cursor: pointer;
+}
+.oauth-client .client-actions button.delete-btn {
+  background: #d32f2f;
+  color: white;
+  border: 1px solid #b71c1c;
+  border-radius: 3px;
+}
+.oauth-client .client-actions button.edit-btn {
+  background: #1976d2;
+  color: white;
+  border: 1px solid #1565c0;
+  border-radius: 3px;
+}
+.oauth-client .edit-form {
+  margin-top: 1em;
+  padding: 0.5em;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background: #fafafa;
+}
+.oauth-client .edit-form label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 0.25em;
+  margin-top: 0.5em;
+}
+.oauth-client .edit-form input[type="text"],
+.oauth-client .edit-form input[type="url"] {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  padding: 0.3em;
+  box-sizing: border-box;
+}
+.oauth-client .edit-form .edit-form-actions {
+  margin-top: 0.5em;
+  display: flex;
+  gap: 0.5em;
+}
 #register-form label {
   display: block;
   margin-bottom: 0.5em;
@@ -195,12 +242,15 @@ function loadClients() {
       }
       var html = "";
       clients.forEach(function(c) {
-        html += '<div class="oauth-client"><h3>' + htmlEscape(c.client_name) + "</h3><dl>";
+        html += '<div class="oauth-client" data-client-id="' + htmlEscape(c.client_id) + '"><h3>' + htmlEscape(c.client_name) + "</h3><dl>";
         html += "<dt>Client ID</dt><dd><code>" + htmlEscape(c.client_id) + "</code></dd>";
         html += "<dt>Redirect URI</dt><dd><code>" + htmlEscape(c.redirect_uri) + "</code></dd>";
         html += "<dt>Created</dt><dd>" + htmlEscape(c.created_at) + "</dd>";
         html += "<dt>Authorization URL</dt><dd><code>" + htmlEscape(authorizeUrl(c)) + "</code></dd>";
-        html += "</dl></div>";
+        html += '</dl><div class="client-actions">';
+        html += '<button class="edit-btn" data-client-id="' + htmlEscape(c.client_id) + '" data-client-name="' + htmlEscape(c.client_name) + '" data-redirect-uri="' + htmlEscape(c.redirect_uri) + '">Edit</button>';
+        html += '<button class="delete-btn" data-client-id="' + htmlEscape(c.client_id) + '" data-client-name="' + htmlEscape(c.client_name) + '">Delete</button>';
+        html += "</div></div>";
       });
       el.innerHTML = html;
     });
@@ -240,6 +290,63 @@ document.getElementById("register-form").addEventListener("submit", function(ev)
 });
 
 loadClients();
+
+document.addEventListener("click", function(ev) {
+  if (ev.target.classList.contains("delete-btn")) {
+    var clientId = ev.target.dataset.clientId;
+    var clientName = ev.target.dataset.clientName;
+    if (!confirm("Delete client \"" + clientName + "\"? This cannot be undone.")) return;
+    fetch("/-/oauth/clients/" + encodeURIComponent(clientId) + ".json", {
+      method: "DELETE",
+      credentials: "same-origin"
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          alert("Error: " + data.error);
+          return;
+        }
+        loadClients();
+      });
+  }
+  if (ev.target.classList.contains("edit-btn")) {
+    var btn = ev.target;
+    var clientDiv = btn.closest(".oauth-client");
+    if (clientDiv.querySelector(".edit-form")) return;
+    var form = document.createElement("div");
+    form.className = "edit-form";
+    form.innerHTML = '<label>Client name <input type="text" name="client_name" value="' + htmlEscape(btn.dataset.clientName) + '"></label>'
+      + '<label>Redirect URI <input type="url" name="redirect_uri" value="' + htmlEscape(btn.dataset.redirectUri) + '"></label>'
+      + '<div class="edit-form-actions"><button type="button" class="save-edit-btn">Save</button> <button type="button" class="cancel-edit-btn">Cancel</button></div>';
+    clientDiv.appendChild(form);
+  }
+  if (ev.target.classList.contains("cancel-edit-btn")) {
+    ev.target.closest(".edit-form").remove();
+  }
+  if (ev.target.classList.contains("save-edit-btn")) {
+    var editForm = ev.target.closest(".edit-form");
+    var clientDiv = ev.target.closest(".oauth-client");
+    var clientId = clientDiv.dataset.clientId;
+    var body = new URLSearchParams();
+    body.set("client_name", editForm.querySelector('[name="client_name"]').value);
+    body.set("redirect_uri", editForm.querySelector('[name="redirect_uri"]').value);
+    body.set("csrftoken", getCsrfToken());
+    fetch("/-/oauth/clients/" + encodeURIComponent(clientId) + ".json", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: body.toString()
+    })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) {
+          alert("Error: " + data.error);
+          return;
+        }
+        loadClients();
+      });
+  }
+});
 </script>
 
 {% endblock %}

@@ -1,4 +1,5 @@
 from datasette import hookimpl
+from datasette.permissions import Action
 from datasette.tokens import TokenRestrictions
 from datasette.utils.asgi import Response
 import json
@@ -87,6 +88,15 @@ def _require_auth(request):
     return None
 
 
+async def _require_manage_clients(request, datasette):
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    if not await datasette.allowed(actor=request.actor, action="oauth-manage-clients"):
+        return Response.json({"error": "Permission denied"}, status=403)
+    return None
+
+
 async def _get_client(datasette, client_id):
     internal = datasette.get_internal_database()
     result = await internal.execute(
@@ -102,7 +112,7 @@ async def _get_client(datasette, client_id):
 
 
 async def oauth_clients_html(request, datasette):
-    auth_error = _require_auth(request)
+    auth_error = await _require_manage_clients(request, datasette)
     if auth_error:
         return auth_error
     html = await datasette.render_template(
@@ -121,7 +131,7 @@ async def oauth_clients_json(request, datasette):
 
 
 async def _oauth_clients_list(request, datasette):
-    auth_error = _require_auth(request)
+    auth_error = await _require_manage_clients(request, datasette)
     if auth_error:
         return auth_error
 
@@ -136,7 +146,7 @@ async def _oauth_clients_list(request, datasette):
 
 
 async def _oauth_clients_register(request, datasette):
-    auth_error = _require_auth(request)
+    auth_error = await _require_manage_clients(request, datasette)
     if auth_error:
         return auth_error
 
@@ -174,6 +184,70 @@ async def _oauth_clients_register(request, datasette):
             "redirect_uri": redirect_uri,
         }
     )
+
+
+async def oauth_client_detail_json(request, datasette):
+    client_id = request.url_vars["client_id"]
+    if request.method == "POST":
+        return await _oauth_client_edit(request, datasette, client_id)
+    elif request.method == "DELETE":
+        return await _oauth_client_delete(request, datasette, client_id)
+    return Response.json({"error": "Method not allowed"}, status=405)
+
+
+async def _oauth_client_edit(request, datasette, client_id):
+    auth_error = await _require_manage_clients(request, datasette)
+    if auth_error:
+        return auth_error
+
+    client = await _get_client(datasette, client_id)
+    if not client:
+        return Response.json({"error": "Client not found"}, status=404)
+    if client["created_by"] != request.actor["id"]:
+        return Response.json({"error": "Forbidden"}, status=403)
+
+    post_vars = await request.post_vars()
+    client_name = post_vars.get("client_name", "").strip()
+    redirect_uri = post_vars.get("redirect_uri", "").strip()
+
+    if not client_name or not redirect_uri:
+        return Response.json(
+            {"error": "client_name and redirect_uri are required"}, status=400
+        )
+
+    internal = datasette.get_internal_database()
+    await internal.execute_write(
+        "UPDATE oauth_clients SET client_name = ?, redirect_uri = ? WHERE client_id = ?",
+        [client_name, redirect_uri, client_id],
+    )
+
+    return Response.json(
+        {
+            "client_id": client_id,
+            "client_name": client_name,
+            "redirect_uri": redirect_uri,
+        }
+    )
+
+
+async def _oauth_client_delete(request, datasette, client_id):
+    auth_error = await _require_manage_clients(request, datasette)
+    if auth_error:
+        return auth_error
+
+    client = await _get_client(datasette, client_id)
+    if not client:
+        return Response.json({"error": "Client not found"}, status=404)
+    if client["created_by"] != request.actor["id"]:
+        return Response.json({"error": "Forbidden"}, status=403)
+
+    internal = datasette.get_internal_database()
+    await internal.execute_write(
+        "DELETE FROM oauth_clients WHERE client_id = ?",
+        [client_id],
+    )
+
+    return Response.json({"ok": True})
 
 
 def _scope_label(scope):
@@ -592,13 +666,31 @@ async def _oauth_token_device_code(post_vars, datasette):
 
 
 @hookimpl
-def skip_csrf(scope):
-    """Skip CSRF for machine-to-machine endpoints."""
-    if scope["type"] == "http" and scope["path"] in (
-        "/-/oauth/token",
-        "/-/oauth/device",
+def skip_csrf(datasette, scope):
+    """Skip CSRF for machine-to-machine endpoints and DELETE on client detail."""
+    if scope["type"] != "http":
+        return
+    token_path = datasette.urls.path("/-/oauth/token")
+    device_path = datasette.urls.path("/-/oauth/device")
+    clients_prefix = datasette.urls.path("/-/oauth/clients/")
+    if scope["path"] in (token_path, device_path):
+        return True
+    if (
+        scope.get("method") == "DELETE"
+        and scope["path"].startswith(clients_prefix)
+        and scope["path"].endswith(".json")
     ):
         return True
+
+
+@hookimpl
+def register_actions(datasette):
+    return [
+        Action(
+            name="oauth-manage-clients",
+            description="Manage OAuth clients (register, edit, delete)",
+        ),
+    ]
 
 
 @hookimpl
@@ -606,6 +698,7 @@ def register_routes(datasette):
     return [
         (r"^/-/oauth/clients$", oauth_clients_html),
         (r"^/-/oauth/clients\.json$", oauth_clients_json),
+        (r"^/-/oauth/clients/(?P<client_id>[^/]+)\.json$", oauth_client_detail_json),
         (r"^/-/oauth/authorize$", oauth_authorize),
         (r"^/-/oauth/token$", oauth_token),
         (r"^/-/oauth/device$", oauth_device),
