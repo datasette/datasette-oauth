@@ -1,6 +1,6 @@
 [project]
 name = "datasette-oauth"
-version = "0.1"
+version = "0.1a0"
 description = "Datasette as an OAuth provider"
 readme = "README.md"
 authors = [{name = "Datasette"}]
