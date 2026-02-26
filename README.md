@@ -43,12 +43,12 @@ Third-party App                  Datasette                        User
 
 ## Endpoints
 
-### Register a client: `POST /-/oauth/clients`
+### Register a client: `POST /-/oauth/clients.json`
 
-Requires authentication. Creates a new OAuth client application.
+Requires authentication and the `oauth-manage-clients` permission. Creates a new OAuth client application.
 
 ```bash
-curl -X POST 'https://datasette.example.com/-/oauth/clients' \
+curl -X POST 'https://datasette.example.com/-/oauth/clients.json' \
   -H 'Cookie: ds_actor=...' \
   -d 'client_name=My App&redirect_uri=https://myapp.example.com/callback'
 ```
@@ -66,9 +66,9 @@ Response:
 
 The `client_secret` is shown **once** at registration time. It is stored as a SHA-256 hash.
 
-### List your clients: `GET /-/oauth/clients`
+### List your clients: `GET /-/oauth/clients.json`
 
-Requires authentication. Returns clients registered by the current user.
+Requires authentication and the `oauth-manage-clients` permission. Returns clients registered by the current user.
 
 ```json
 [
@@ -197,6 +197,107 @@ plugins:
   datasette-oauth:
     allow_root_device_tokens: true
 ```
+
+## Plugin configuration
+
+The device authorization flow is disabled by default. To enable it, set `enable_device_flow` in your `datasette.yaml`:
+
+```yaml
+plugins:
+  datasette-oauth:
+    enable_device_flow: true
+```
+
+When disabled (the default), all device flow endpoints return a 403 error. This prevents unauthenticated writes to the internal database.
+
+Both permissions (`oauth-manage-clients` and `oauth-device-tokens`) default to deny, so installing the plugin does not change any behavior until permissions are explicitly granted and device flow is enabled.
+
+## Device authorization flow
+
+The device authorization flow allows CLI tools and headless applications to obtain access tokens without a browser redirect. This implements [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628).
+
+This flow must be explicitly enabled with the `enable_device_flow` plugin setting.
+
+```
+CLI App                          Datasette                        User
+  |                                  |                              |
+  |-- 1. Request device code ------->|                              |
+  |   POST /-/oauth/device           |                              |
+  |                                  |                              |
+  |<-- 2. Device + user code --------|                              |
+  |   {device_code, user_code,       |                              |
+  |    verification_uri}             |                              |
+  |                                  |                              |
+  |-- 3. Display to user ------------|----------------------------->|
+  |   "Go to URL, enter ABCD-EFGH"  |                              |
+  |                                  |<-- 4. User visits URL -------|
+  |                                  |   enters code, approves      |
+  |-- 5. Poll for token ------------>|                              |
+  |   POST /-/oauth/token            |                              |
+  |   grant_type=device_code         |                              |
+  |                                  |                              |
+  |<-- 6. Access token --------------|                              |
+  |   {access_token, expires_in}     |                              |
+```
+
+### Step 1: Request a device code
+
+```bash
+curl -X POST 'https://datasette.example.com/-/oauth/device' \
+  -d 'scope=[["view-instance"],["view-database","mydb"]]'
+```
+
+Response:
+
+```json
+{
+  "device_code": "a1b2c3d4...",
+  "user_code": "ABCD-EFGH",
+  "verification_uri": "https://datasette.example.com/-/oauth/device/verify",
+  "expires_in": 900,
+  "interval": 5
+}
+```
+
+The `scope` parameter is optional. If omitted, the token will be unrestricted.
+
+### Step 2: Direct the user to verify
+
+Display the `user_code` and `verification_uri` to the user. They visit the URL in a browser, enter the code, review the requested permissions, choose a token time limit, and click "Authorize device" or "Deny".
+
+The user must be signed in and have the `oauth-device-tokens` permission.
+
+### Step 3: Poll for the token
+
+While the user verifies, poll the token endpoint:
+
+```bash
+curl -X POST 'https://datasette.example.com/-/oauth/token' \
+  -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
+  -d 'device_code=a1b2c3d4...'
+```
+
+Poll every `interval` seconds (5 by default). Possible responses:
+
+| Response | Meaning |
+|---|---|
+| `{"error": "authorization_pending"}` | User hasn't completed verification yet — keep polling |
+| `{"error": "access_denied"}` | User denied the request |
+| `{"error": "expired_token"}` | Device code expired (15 minutes) |
+
+On success:
+
+```json
+{
+  "access_token": "dstok_...",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+Device flow tokens have an expiry time chosen by the user during verification. Options range from 15 minutes to 30 days, with a default of 1 hour. The `expires_in` field indicates the token lifetime in seconds.
+
+Tokens issued through the standard authorization code flow do not expire.
 
 ## Security
 
