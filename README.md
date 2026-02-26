@@ -17,70 +17,64 @@ Install this plugin in the same environment as Datasette.
 datasette install datasette-oauth
 ```
 
-## How it works
+## Permissions
 
-```
-Third-party App                  Datasette                        User
-      |                               |                             |
-      |-- 1. Redirect user ---------->|                             |
-      |   GET /-/oauth/authorize      |                             |
-      |   ?client_id=...              |-- 2. Show consent screen -->|
-      |   &redirect_uri=...           |                             |
-      |   &scope=...                  |<-- 3. User approves --------|
-      |   &state=...                  |                             |
-      |   &response_type=code         |                             |
-      |                               |                             |
-      |<-- 4. Redirect with code -----|                             |
-      |   redirect_uri?code=...       |                             |
-      |                               |                             |
-      |-- 5. Exchange code ---------->|                             |
-      |   POST /-/oauth/token         |                             |
-      |   code=...&client_secret=...  |                             |
-      |                               |                             |
-      |<-- 6. Access token -----------|                             |
-      |   {"access_token":"dstok_..."}|                             |
+This plugin registers two permissions that must be granted before users can access the corresponding features. Both default to deny, so installing the plugin does not change any behavior until permissions are explicitly granted.
+
+### `oauth-manage-clients`
+
+Controls access to the client management UI and API — registering, listing, editing, and deleting OAuth clients. Grant it in `datasette.yaml`:
+
+```yaml
+permissions:
+  oauth-manage-clients:
+    id: "*"
 ```
 
-## Endpoints
+### `oauth-device-tokens`
 
-### Register a client: `POST /-/oauth/clients.json`
+Controls whether a user can authorize device token requests at `/-/oauth/device/verify`. Grant it in `datasette.yaml`:
 
-Requires authentication and the `oauth-manage-clients` permission. Creates a new OAuth client application.
-
-```bash
-curl -X POST 'https://datasette.example.com/-/oauth/clients.json' \
-  -H 'Cookie: ds_actor=...' \
-  -d 'client_name=My App&redirect_uri=https://myapp.example.com/callback'
+```yaml
+permissions:
+  oauth-device-tokens:
+    id: "*"
 ```
 
-Response:
+The root user is **denied** this permission by default, even when `--root` is enabled. To allow root to authorize device tokens, set `allow_root_device_tokens` in the plugin configuration:
 
-```json
-{
-  "client_id": "a1b2c3...",
-  "client_secret": "d4e5f6...",
-  "client_name": "My App",
-  "redirect_uri": "https://myapp.example.com/callback"
-}
+```yaml
+plugins:
+  datasette-oauth:
+    allow_root_device_tokens: true
 ```
 
-The `client_secret` is shown **once** at registration time. It is stored as a SHA-256 hash.
+## Plugin configuration
 
-### List your clients: `GET /-/oauth/clients.json`
+The device authorization flow is disabled by default. To enable it, set `enable_device_flow` in your `datasette.yaml`:
 
-Requires authentication and the `oauth-manage-clients` permission. Returns clients registered by the current user.
-
-```json
-[
-  {
-    "client_id": "a1b2c3...",
-    "client_name": "My App",
-    "redirect_uri": "https://myapp.example.com/callback",
-    "created_by": "user-id",
-    "created_at": "2025-01-15T10:30:00Z"
-  }
-]
+```yaml
+plugins:
+  datasette-oauth:
+    enable_device_flow: true
 ```
+
+When disabled (the default), all device flow endpoints return a 403 error. This prevents unauthenticated writes to the internal database.
+
+## How it works (authorization code flow)
+
+Before the OAuth flow can begin, a user with the `oauth-manage-clients` permission must register a client application via the `/-/oauth/clients` management UI or the `POST /-/oauth/clients.json` API. This produces a `client_id` and `client_secret` that the third-party app will use.
+
+Once the client is registered:
+
+1. The third-party app redirects the user to `GET /-/oauth/authorize` with `client_id`, `redirect_uri`, `scope`, `state`, and `response_type=code`
+2. Datasette shows the user a consent screen with the app name and requested permissions
+3. The user approves (or denies) the request
+4. Datasette redirects back to the app's `redirect_uri` with an authorization code
+5. The app exchanges the code for an access token via `POST /-/oauth/token`
+6. Datasette returns a `dstok_...` API token restricted to the approved permissions
+
+## Authorization code endpoints
 
 ### Authorization: `GET /-/oauth/authorize`
 
@@ -166,79 +160,67 @@ curl -H 'Authorization: Bearer dstok_...' \
 
 The token is restricted to only the permissions the user approved on the consent screen.
 
-## Permissions
+## Client management
 
-This plugin registers two permissions that must be granted before users can access the corresponding features. Both default to deny.
+### Client management UI: `/-/oauth/clients`
 
-### `oauth-manage-clients`
+Users with the `oauth-manage-clients` permission can visit `/-/oauth/clients` in their browser to register, edit, and delete OAuth client applications. The client secret is displayed once at registration time.
 
-Controls access to the client management UI and API — registering, listing, editing, and deleting OAuth clients. Grant it in `datasette.yaml`:
+The same operations are available via the JSON API below.
 
-```yaml
-permissions:
-  oauth-manage-clients:
-    id: "*"
+### Register a client: `POST /-/oauth/clients.json`
+
+Requires authentication and the `oauth-manage-clients` permission. Creates a new OAuth client application.
+
+```bash
+curl -X POST 'https://datasette.example.com/-/oauth/clients.json' \
+  -H 'Cookie: ds_actor=...' \
+  -d 'client_name=My App&redirect_uri=https://myapp.example.com/callback'
 ```
 
-### `oauth-device-tokens`
+Response:
 
-Controls whether a user can authorize device token requests at `/-/oauth/device/verify`. Grant it in `datasette.yaml`:
-
-```yaml
-permissions:
-  oauth-device-tokens:
-    id: "*"
+```json
+{
+  "client_id": "a1b2c3...",
+  "client_secret": "d4e5f6...",
+  "client_name": "My App",
+  "redirect_uri": "https://myapp.example.com/callback"
+}
 ```
 
-The root user is **denied** this permission by default, even when `--root` is enabled. To allow root to authorize device tokens, set `allow_root_device_tokens` in the plugin configuration:
+The `client_secret` is shown **once** at registration time. It is stored as a SHA-256 hash.
 
-```yaml
-plugins:
-  datasette-oauth:
-    allow_root_device_tokens: true
+### List your clients: `GET /-/oauth/clients.json`
+
+Requires authentication and the `oauth-manage-clients` permission. Returns clients registered by the current user.
+
+```json
+[
+  {
+    "client_id": "a1b2c3...",
+    "client_name": "My App",
+    "redirect_uri": "https://myapp.example.com/callback",
+    "created_by": "user-id",
+    "created_at": "2025-01-15T10:30:00Z"
+  }
+]
 ```
-
-## Plugin configuration
-
-The device authorization flow is disabled by default. To enable it, set `enable_device_flow` in your `datasette.yaml`:
-
-```yaml
-plugins:
-  datasette-oauth:
-    enable_device_flow: true
-```
-
-When disabled (the default), all device flow endpoints return a 403 error. This prevents unauthenticated writes to the internal database.
-
-Both permissions (`oauth-manage-clients` and `oauth-device-tokens`) default to deny, so installing the plugin does not change any behavior until permissions are explicitly granted and device flow is enabled.
 
 ## Device authorization flow
 
 The device authorization flow allows CLI tools and headless applications to obtain access tokens without a browser redirect. This implements [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628).
 
+**Enable with caution.** The device flow relies on a user correctly verifying that they initiated the request. An attacker could generate a device code and trick a user into approving it — for example by sending them a link with the code pre-filled, or by social-engineering them into entering the code. If your Datasette instance has users who may not understand the implications of approving a device authorization request, consider warning them or restricting the `oauth-device-tokens` permission to trusted users only.
+
 This flow must be explicitly enabled with the `enable_device_flow` plugin setting.
 
-```
-CLI App                          Datasette                        User
-  |                                  |                              |
-  |-- 1. Request device code ------->|                              |
-  |   POST /-/oauth/device           |                              |
-  |                                  |                              |
-  |<-- 2. Device + user code --------|                              |
-  |   {device_code, user_code,       |                              |
-  |    verification_uri}             |                              |
-  |                                  |                              |
-  |-- 3. Display to user ------------|----------------------------->|
-  |   "Go to URL, enter ABCD-EFGH"  |                              |
-  |                                  |<-- 4. User visits URL -------|
-  |                                  |   enters code, approves      |
-  |-- 5. Poll for token ------------>|                              |
-  |   POST /-/oauth/token            |                              |
-  |   grant_type=device_code         |                              |
-  |                                  |                              |
-  |<-- 6. Access token --------------|                              |
-  |   {access_token, expires_in}     |                              |
-```
+1. The CLI app requests a device code via `POST /-/oauth/device`
+2. Datasette returns a `device_code`, a short `user_code` (e.g. `ABCD-EFGH`), and a `verification_uri`
+3. The CLI app displays the user code and verification URL to the user
+4. The user visits the URL in a browser, enters the code, and approves the request
+5. Meanwhile, the CLI app polls `POST /-/oauth/token` with the device code
+6. Once approved, the token endpoint returns an access token
 
 ### Step 1: Request a device code
 
@@ -301,11 +283,9 @@ Tokens issued through the standard authorization code flow do not expire.
 
 ## Security
 
-- **Client secrets** are stored as SHA-256 hashes
+- **Client secrets** are 64 random hex characters, shown once at registration and stored as SHA-256 hashes
 - **Authorization codes** expire after 10 minutes and are single-use
 - **Redirect URIs** must exactly match the registered URI
-- **CSRF protection** is enforced on browser-facing endpoints
-- The token endpoint skips CSRF (machine-to-machine, uses client_secret)
 - Only actors with an `id` can authorize (same check as `/-/create-token`)
 - Token-authenticated requests cannot be used to authorize new clients
 
