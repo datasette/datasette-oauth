@@ -556,11 +556,13 @@ async def oauth_token(request, datasette):
     if time.time() > float(auth_code["expires_at"]):
         return Response.json({"error": "invalid_grant"}, status=400)
 
-    # Mark code as used
-    await internal.execute_write(
-        "UPDATE oauth_authorization_codes SET used = 1 WHERE code = ?",
+    # Atomically consume the code so concurrent exchanges cannot both succeed
+    consume_result = await internal.execute_write(
+        "UPDATE oauth_authorization_codes SET used = 1 WHERE code = ? AND used = 0",
         [code],
     )
+    if consume_result.rowcount != 1:
+        return Response.json({"error": "invalid_grant"}, status=400)
 
     # Parse approved scopes and create a restricted token
     approved_scopes = json.loads(auth_code["scope"])
@@ -784,16 +786,20 @@ async def _oauth_token_device_code(post_vars, datasette):
     token_ttl_seconds = (
         device_row.get("token_ttl_seconds") or DEFAULT_DEVICE_TOKEN_TTL_SECONDS
     )
+    # Atomically consume approved device codes before token creation so
+    # concurrent polls cannot receive multiple tokens for one authorization.
+    consume_result = await internal.execute_write(
+        "UPDATE oauth_device_codes SET status = 'used' "
+        "WHERE device_code = ? AND status = 'approved'",
+        [device_code],
+    )
+    if consume_result.rowcount != 1:
+        return Response.json({"error": "invalid_grant"}, status=400)
+
     token = await datasette.create_token(
         device_row["actor_id"],
         expires_after=int(token_ttl_seconds),
         restrictions=restrictions,
-    )
-
-    # Mark as used so the device_code can't be reused
-    await internal.execute_write(
-        "UPDATE oauth_device_codes SET status = 'used' WHERE device_code = ?",
-        [device_code],
     )
 
     return Response.json(
