@@ -211,7 +211,8 @@ Requires authentication and the `oauth-manage-clients` permission. Returns clien
 
 The device authorization flow allows CLI tools and headless applications to obtain access tokens without a browser redirect. This implements [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628).
 
-**Enable with caution.** The device flow relies on a user correctly verifying that they initiated the request. An attacker could generate a device code and trick a user into approving it — for example by sending them a link with the code pre-filled, or by social-engineering them into entering the code. If your Datasette instance has users who may not understand the implications of approving a device authorization request, consider warning them or restricting the `oauth-device-tokens` permission to trusted users only.
+> [!CAUTION]
+> **Enable with caution.** The device flow relies on a user correctly verifying that they initiated the request. An attacker could generate a device code and trick a user into approving it — for example by sending them a link with the code pre-filled, or by social-engineering them into entering the code. If your Datasette instance has users who may not understand the implications of approving a device authorization request, consider warning them or restricting the `oauth-device-tokens` permission to trusted users only.
 
 This flow must be explicitly enabled with the `enable_device_flow` plugin setting.
 
