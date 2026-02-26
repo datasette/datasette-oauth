@@ -1,5 +1,5 @@
 from datasette import hookimpl
-from datasette.permissions import Action
+from datasette.permissions import Action, PermissionSQL
 from datasette.tokens import TokenRestrictions
 from datasette.utils.asgi import Response
 import json
@@ -647,8 +647,19 @@ async def oauth_device_verify(request, datasette):
     return Response.json({"error": "Method not allowed"}, status=405)
 
 
-async def _oauth_device_verify_get(request, datasette):
+async def _require_device_tokens(request, datasette):
     auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+    if not await datasette.allowed(
+        actor=request.actor, action="oauth-device-tokens"
+    ):
+        return Response.json({"error": "Permission denied"}, status=403)
+    return None
+
+
+async def _oauth_device_verify_get(request, datasette):
+    auth_error = await _require_device_tokens(request, datasette)
     if auth_error:
         return auth_error
 
@@ -679,7 +690,7 @@ async def _oauth_device_verify_get(request, datasette):
 
 
 async def _oauth_device_verify_post(request, datasette):
-    auth_error = _require_auth(request)
+    auth_error = await _require_device_tokens(request, datasette)
     if auth_error:
         return auth_error
 
@@ -836,7 +847,23 @@ def register_actions(datasette):
             name="oauth-manage-clients",
             description="Manage OAuth clients (register, edit, delete)",
         ),
+        Action(
+            name="oauth-device-tokens",
+            description="Authorize device token requests",
+        ),
     ]
+
+
+@hookimpl
+def permission_resources_sql(datasette, actor, action):
+    if action != "oauth-device-tokens":
+        return None
+    if actor is None or actor.get("id") != "root":
+        return None
+    config = datasette.plugin_config("datasette-oauth") or {}
+    if config.get("allow_root_device_tokens"):
+        return None
+    return PermissionSQL.deny(reason="Root cannot use device tokens by default")
 
 
 @hookimpl

@@ -166,6 +166,38 @@ curl -H 'Authorization: Bearer dstok_...' \
 
 The token is restricted to only the permissions the user approved on the consent screen.
 
+## Permissions
+
+This plugin registers two permissions that must be granted before users can access the corresponding features. Both default to deny.
+
+### `oauth-manage-clients`
+
+Controls access to the client management UI and API — registering, listing, editing, and deleting OAuth clients. Grant it in `datasette.yaml`:
+
+```yaml
+permissions:
+  oauth-manage-clients:
+    id: "*"
+```
+
+### `oauth-device-tokens`
+
+Controls whether a user can authorize device token requests at `/-/oauth/device/verify`. Grant it in `datasette.yaml`:
+
+```yaml
+permissions:
+  oauth-device-tokens:
+    id: "*"
+```
+
+The root user is **denied** this permission by default, even when `--root` is enabled. To allow root to authorize device tokens, set `allow_root_device_tokens` in the plugin configuration:
+
+```yaml
+plugins:
+  datasette-oauth:
+    allow_root_device_tokens: true
+```
+
 ## Security
 
 - **Client secrets** are stored as SHA-256 hashes

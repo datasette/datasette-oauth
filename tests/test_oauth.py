@@ -14,6 +14,7 @@ def datasette():
         config={
             "permissions": {
                 "oauth-manage-clients": {"id": "*"},
+                "oauth-device-tokens": {"id": "*"},
             }
         },
     )
@@ -1015,6 +1016,78 @@ async def test_device_flow_code_race_only_one_succeeds(datasette):
     responses = await asyncio.gather(first_task, second_task)
     status_codes = sorted(response.status_code for response in responses)
     assert status_codes == [200, 400]
+
+
+# --- oauth-device-tokens permission ---
+
+
+@pytest.mark.asyncio
+async def test_device_verify_requires_oauth_device_tokens_permission():
+    """Device verify GET should require oauth-device-tokens permission."""
+    ds = Datasette(memory=True)
+    cookies = auth_cookies(ds)
+    response = await ds.client.get("/-/oauth/device/verify", cookies=cookies)
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_device_verify_post_requires_oauth_device_tokens_permission():
+    """Device verify POST should require oauth-device-tokens permission."""
+    ds = Datasette(memory=True)
+    cookies = auth_cookies(ds)
+    response = await csrf_post(
+        ds, "/-/oauth/device/verify", {"code": "ABCD-EFGH"}, cookies=cookies
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_device_verify_works_with_permission(datasette):
+    """Device verify works when oauth-device-tokens is granted."""
+    cookies = auth_cookies(datasette)
+    response = await datasette.client.get("/-/oauth/device/verify", cookies=cookies)
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_device_tokens_denied_for_root_by_default():
+    """Root user should be denied oauth-device-tokens even with root_enabled."""
+    ds = Datasette(
+        memory=True,
+        config={
+            "permissions": {
+                "oauth-device-tokens": {"id": "*"},
+                "oauth-manage-clients": {"id": "*"},
+            }
+        },
+    )
+    ds.root_enabled = True
+    cookies = auth_cookies(ds, actor_id="root")
+    response = await ds.client.get("/-/oauth/device/verify", cookies=cookies)
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_device_tokens_allowed_for_root_with_plugin_config():
+    """Root can use device tokens when allow_root_device_tokens is true."""
+    ds = Datasette(
+        memory=True,
+        config={
+            "permissions": {
+                "oauth-device-tokens": {"id": "*"},
+                "oauth-manage-clients": {"id": "*"},
+            },
+            "plugins": {
+                "datasette-oauth": {
+                    "allow_root_device_tokens": True,
+                }
+            },
+        },
+    )
+    ds.root_enabled = True
+    cookies = auth_cookies(ds, actor_id="root")
+    response = await ds.client.get("/-/oauth/device/verify", cookies=cookies)
+    assert response.status_code == 200
 
 
 # --- Client Edit & Delete ---
