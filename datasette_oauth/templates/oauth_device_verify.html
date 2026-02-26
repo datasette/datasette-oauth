@@ -4,17 +4,148 @@
 
 {% block content %}
 
+<style>
+.oauth-device-panel {
+  max-width: 760px;
+}
+.oauth-device-panel .notice {
+  border-radius: 6px;
+  padding: 0.9em 1em;
+  margin: 1em 0;
+}
+.oauth-device-panel .notice.error {
+  border: 2px solid #b71c1c;
+  background: #fff3f3;
+}
+.oauth-device-panel .notice.success {
+  border: 2px solid #1b5e20;
+  background: #f1fff1;
+}
+.oauth-device-panel .consent-warning {
+  border: 3px solid #a84300;
+  background: #fff4e8;
+  border-radius: 8px;
+  padding: 1em;
+  margin: 1em 0;
+}
+.oauth-device-panel .consent-warning h2 {
+  margin-top: 0;
+  color: #7a2500;
+}
+.oauth-device-panel .full-access {
+  border: 2px solid #c62828;
+  background: #fff0f0;
+  color: #7f0000;
+  border-radius: 6px;
+  padding: 0.8em;
+  font-weight: bold;
+  font-size: 1.1em;
+  margin: 0.8em 0;
+}
+.oauth-device-panel .scope-list {
+  margin: 0.75em 0 0 0;
+  padding-left: 1.25em;
+}
+.oauth-device-panel .scope-list li {
+  margin: 0.3em 0;
+}
+.oauth-device-panel .meta {
+  color: #666;
+  font-size: 0.95em;
+}
+.oauth-device-panel .time-limit {
+  margin: 1em 0;
+  padding: 0.8em;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fafafa;
+}
+.oauth-device-panel .time-limit label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 0.35em;
+}
+.oauth-device-panel select {
+  font-size: 1em;
+  padding: 0.25em 0.4em;
+}
+.oauth-device-panel pre {
+  background: #f6f6f6;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0.7em;
+  overflow-x: auto;
+}
+</style>
+
 <h1>Verify Device</h1>
 
+<div class="oauth-device-panel">
 {% if success %}
-<p>Device authorized successfully. You can close this window and return to your terminal.</p>
+<div class="notice success">
+  <p><strong>Device authorized successfully.</strong> You can close this window and return to your terminal.</p>
+</div>
 {% else %}
 
 {% if error %}
-<p style="color: red; font-weight: bold;">{{ error }}</p>
+<div class="notice error">
+  <p style="margin: 0; color: #7f0000; font-weight: bold;">{{ error }}</p>
+</div>
 {% endif %}
 
-<p>Enter the code shown on your device:</p>
+{% if review_request %}
+<div class="consent-warning">
+  <h2>Unverified Device Authorization Request</h2>
+  <p>This site cannot verify which application started this request. Only continue if you initiated this login and trust the app on your device.</p>
+  <p><strong>Device code:</strong> <code>{{ user_code }}</code></p>
+
+  {% if scope_error %}
+  <p style="color: #7f0000; font-weight: bold;">{{ scope_error }}</p>
+  {% elif full_access %}
+  <div class="full-access">
+    Granting this request will give the app full access to your Datasette account (everything you can do).
+  </div>
+  <p class="meta">No explicit scopes were requested, so this token will be unrestricted.</p>
+  {% else %}
+  <p><strong>The following scopes will be granted:</strong></p>
+  <ul class="scope-list">
+    {% for scope in scopes %}
+    <li><code>{{ scope.label }}</code></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <details>
+    <summary>Show raw requested scopes</summary>
+    <pre>{{ scope_raw }}</pre>
+  </details>
+</div>
+
+<form method="post" action="/-/oauth/device/verify">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <input type="hidden" name="code" value="{{ user_code }}">
+  <input type="hidden" name="confirm" value="1">
+
+  <div class="time-limit">
+    <label for="token_ttl_seconds">Access token time limit</label>
+    <select name="token_ttl_seconds" id="token_ttl_seconds">
+      {% for option in ttl_options %}
+      <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+      {% endfor %}
+    </select>
+    <p class="meta" style="margin-bottom: 0;">Default is <strong>1 hour</strong>. After it expires, the app will need a new authorization.</p>
+  </div>
+
+  <p>
+    <input type="submit" value="Authorize device">
+    <input type="submit" name="deny" value="Deny">
+  </p>
+</form>
+
+<p class="meta"><a href="/-/oauth/device/verify">Enter a different code</a></p>
+{% else %}
+
+<p>Enter the code shown on your device to review what it is requesting.</p>
 
 <form method="post" action="/-/oauth/device/verify">
   <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
@@ -23,12 +154,11 @@
            style="font-size: 1.5em; font-family: monospace; letter-spacing: 0.1em; text-transform: uppercase; width: 12em; text-align: center;"
            autocomplete="off" autofocus>
   </p>
-  <p>
-    <input type="submit" value="Authorize">
-    <input type="submit" name="deny" value="Deny">
-  </p>
+  <p><input type="submit" value="Review request"></p>
 </form>
 
 {% endif %}
+{% endif %}
+</div>
 
 {% endblock %}

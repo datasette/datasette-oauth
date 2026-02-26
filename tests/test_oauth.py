@@ -703,6 +703,35 @@ async def test_scope_parsing():
 # --- Device Authorization Flow ---
 
 
+async def review_device_request(datasette, user_code, cookies):
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        {"code": user_code},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    return response
+
+
+async def submit_device_consent(
+    datasette, user_code, cookies, *, deny=False, token_ttl_seconds=None
+):
+    data = {"code": user_code, "confirm": "1"}
+    if deny:
+        data["deny"] = "1"
+    if token_ttl_seconds is not None:
+        data["token_ttl_seconds"] = str(token_ttl_seconds)
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        data,
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    return response
+
+
 @pytest.mark.asyncio
 async def test_device_flow_initiate(datasette):
     """POST /-/oauth/device returns device_code, user_code, verification_uri."""
@@ -774,12 +803,13 @@ async def test_device_flow_full(datasette):
 
     # Step 3: User approves
     cookies = auth_cookies(datasette)
-    approve_response = await csrf_post(
-        datasette,
-        "/-/oauth/device/verify",
-        {"code": user_code},
-        cookies=cookies,
-    )
+    review_response = await review_device_request(datasette, user_code, cookies)
+    assert "Unverified Device Authorization Request" in review_response.text
+    assert "view-instance" in review_response.text
+    assert "Access token time limit" in review_response.text
+    assert "1 hour" in review_response.text
+
+    approve_response = await submit_device_consent(datasette, user_code, cookies)
     assert approve_response.status_code == 200
     assert "authorized successfully" in approve_response.text
 
@@ -798,11 +828,13 @@ async def test_device_flow_full(datasette):
     token_data = token_response.json()
     assert "access_token" in token_data
     assert token_data["token_type"] == "bearer"
+    assert token_data["expires_in"] == 3600
     assert token_data["access_token"].startswith("dstok_")
 
     # Verify token encodes the right restrictions
     decoded = datasette.unsign(token_data["access_token"][len("dstok_") :], "token")
     assert decoded["a"] == "test-user"
+    assert decoded["d"] == 3600
     assert "_r" in decoded
 
 
@@ -821,11 +853,10 @@ async def test_device_flow_deny(datasette):
 
     # User denies
     cookies = auth_cookies(datasette)
-    deny_response = await csrf_post(
-        datasette,
-        "/-/oauth/device/verify",
-        {"code": user_code, "deny": "1"},
-        cookies=cookies,
+    review_response = await review_device_request(datasette, user_code, cookies)
+    assert "full access to your Datasette account" in review_response.text
+    deny_response = await submit_device_consent(
+        datasette, user_code, cookies, deny=True
     )
     assert deny_response.status_code == 200
     assert "denied" in deny_response.text
@@ -859,12 +890,8 @@ async def test_device_flow_code_reuse(datasette):
     user_code = device_data["user_code"]
 
     cookies = auth_cookies(datasette)
-    await csrf_post(
-        datasette,
-        "/-/oauth/device/verify",
-        {"code": user_code},
-        cookies=cookies,
-    )
+    await review_device_request(datasette, user_code, cookies)
+    await submit_device_consent(datasette, user_code, cookies)
 
     # First exchange succeeds
     token_response = await datasette.client.post(
@@ -1028,12 +1055,9 @@ async def test_device_flow_no_scopes_gives_unrestricted_token(datasette):
 
     # Approve
     cookies = auth_cookies(datasette)
-    await csrf_post(
-        datasette,
-        "/-/oauth/device/verify",
-        {"code": user_code},
-        cookies=cookies,
-    )
+    review_response = await review_device_request(datasette, user_code, cookies)
+    assert "full access to your Datasette account" in review_response.text
+    await submit_device_consent(datasette, user_code, cookies)
 
     # Exchange
     token_response = await datasette.client.post(
@@ -1048,8 +1072,42 @@ async def test_device_flow_no_scopes_gives_unrestricted_token(datasette):
     )
     assert token_response.status_code == 200
     token_data = token_response.json()
+    assert token_data["expires_in"] == 3600
 
     # Token should be unrestricted (no _r key)
     decoded = datasette.unsign(token_data["access_token"][len("dstok_") :], "token")
     assert decoded["a"] == "test-user"
+    assert decoded["d"] == 3600
     assert "_r" not in decoded
+
+
+@pytest.mark.asyncio
+async def test_device_flow_custom_time_limit(datasette):
+    response = await datasette.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": json.dumps([["view-instance"]])}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    device_data = response.json()
+    device_code = device_data["device_code"]
+    user_code = device_data["user_code"]
+
+    cookies = auth_cookies(datasette)
+    await review_device_request(datasette, user_code, cookies)
+    await submit_device_consent(datasette, user_code, cookies, token_ttl_seconds=86400)
+
+    token_response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert token_response.status_code == 200
+    token_data = token_response.json()
+    assert token_data["expires_in"] == 86400
+    decoded = datasette.unsign(token_data["access_token"][len("dstok_") :], "token")
+    assert decoded["d"] == 86400

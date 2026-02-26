@@ -9,6 +9,17 @@ import string
 import time
 from urllib.parse import urlencode
 
+DEVICE_TOKEN_TTL_OPTIONS = [
+    (900, "15 minutes"),
+    (3600, "1 hour"),
+    (28800, "8 hours"),
+    (86400, "24 hours"),
+    (604800, "7 days"),
+    (2592000, "30 days"),
+]
+DEFAULT_DEVICE_TOKEN_TTL_SECONDS = 3600
+ALLOWED_DEVICE_TOKEN_TTL_SECONDS = {seconds for seconds, _ in DEVICE_TOKEN_TTL_OPTIONS}
+
 
 def build_restrictions(scopes):
     """Parse a list of scope arrays into a TokenRestrictions object.
@@ -41,6 +52,103 @@ def _hash_secret(secret):
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
+def _parse_scope_list(scope_raw):
+    scopes = json.loads(scope_raw)
+    if not isinstance(scopes, list):
+        raise ValueError("scope must be a JSON array")
+    for scope in scopes:
+        if not isinstance(scope, list):
+            raise ValueError("each scope must be an array")
+        if not 1 <= len(scope) <= 3:
+            raise ValueError("scope arrays must have 1-3 elements")
+        if not all(isinstance(part, str) for part in scope):
+            raise ValueError("scope elements must be strings")
+    return scopes
+
+
+def _device_scope_summary(scope_raw):
+    try:
+        scopes = _parse_scope_list(scope_raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {
+            "scopes": [],
+            "scope_raw": scope_raw,
+            "full_access": False,
+            "scope_error": "Invalid scope data for this request",
+        }
+    return {
+        "scopes": [{"label": _scope_label(scope)} for scope in scopes],
+        "scope_raw": scope_raw,
+        "full_access": not scopes,
+        "scope_error": None,
+    }
+
+
+def _device_ttl_options(selected=None):
+    if selected is None:
+        selected = str(DEFAULT_DEVICE_TOKEN_TTL_SECONDS)
+    else:
+        selected = str(selected)
+    return [
+        {"value": str(seconds), "label": label, "selected": str(seconds) == selected}
+        for seconds, label in DEVICE_TOKEN_TTL_OPTIONS
+    ]
+
+
+def _parse_device_token_ttl(value):
+    if value in (None, ""):
+        return DEFAULT_DEVICE_TOKEN_TTL_SECONDS
+    try:
+        ttl = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ttl not in ALLOWED_DEVICE_TOKEN_TTL_SECONDS:
+        return None
+    return ttl
+
+
+async def _render_device_verify(
+    datasette,
+    request,
+    *,
+    user_code="",
+    error=None,
+    success=False,
+    review_request=False,
+    scope_raw="[]",
+    selected_ttl_seconds=None,
+):
+    context = {
+        "user_code": user_code,
+        "error": error,
+        "success": success,
+        "review_request": review_request,
+        "ttl_options": _device_ttl_options(selected_ttl_seconds),
+        "default_ttl_seconds": str(DEFAULT_DEVICE_TOKEN_TTL_SECONDS),
+    }
+    if review_request:
+        context.update(_device_scope_summary(scope_raw))
+    html = await datasette.render_template(
+        "oauth_device_verify.html",
+        context,
+        request=request,
+    )
+    return Response.html(html)
+
+
+async def _get_device_code_by_user_code(datasette, user_code):
+    internal = datasette.get_internal_database()
+    result = await internal.execute(
+        "SELECT device_code, user_code, scope, expires_at, status, actor_id, token_ttl_seconds "
+        "FROM oauth_device_codes WHERE user_code = ?",
+        [user_code],
+    )
+    rows = result.rows
+    if not rows:
+        return None
+    return dict(rows[0])
+
+
 @hookimpl
 def startup(datasette):
     async def inner():
@@ -71,9 +179,16 @@ def startup(datasette):
                 expires_at TEXT NOT NULL,
                 interval INTEGER NOT NULL DEFAULT 5,
                 status TEXT NOT NULL DEFAULT 'pending',
-                actor_id TEXT
+                actor_id TEXT,
+                token_ttl_seconds INTEGER
             );
             """)
+        table_info = await internal.execute("PRAGMA table_info(oauth_device_codes)")
+        column_names = {row["name"] for row in table_info.rows}
+        if "token_ttl_seconds" not in column_names:
+            await internal.execute_write(
+                "ALTER TABLE oauth_device_codes ADD COLUMN token_ttl_seconds INTEGER"
+            )
 
     return inner
 
@@ -259,6 +374,14 @@ def _scope_label(scope):
     elif len(scope) == 3:
         return f"{scope[0]} on {scope[1]}/{scope[2]}"
     return json.dumps(scope)
+
+
+def _device_code_error_message(device_row):
+    if device_row["status"] != "pending":
+        return "This code has already been used"
+    if time.time() > float(device_row["expires_at"]):
+        return "This code has expired"
+    return None
 
 
 async def oauth_authorize(request, datasette):
@@ -482,9 +605,7 @@ async def oauth_device(request, datasette):
 
     # Validate scope JSON
     try:
-        scopes = json.loads(scope_raw)
-        if not isinstance(scopes, list):
-            raise ValueError
+        scopes = _parse_scope_list(scope_raw)
     except (json.JSONDecodeError, TypeError, ValueError):
         return Response.json({"error": "Invalid scope"}, status=400)
 
@@ -497,8 +618,8 @@ async def oauth_device(request, datasette):
     internal = datasette.get_internal_database()
     await internal.execute_write(
         "INSERT INTO oauth_device_codes "
-        "(device_code, user_code, scope, expires_at, interval, status, actor_id) "
-        "VALUES (?, ?, ?, ?, ?, 'pending', NULL)",
+        "(device_code, user_code, scope, expires_at, interval, status, actor_id, token_ttl_seconds) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', NULL, NULL)",
         [device_code, user_code, json.dumps(scopes), str(expires_at), interval],
     )
 
@@ -530,12 +651,29 @@ async def _oauth_device_verify_get(request, datasette):
         return auth_error
 
     user_code = request.args.get("code", "")
-    html = await datasette.render_template(
-        "oauth_device_verify.html",
-        {"user_code": user_code, "error": None, "success": False},
-        request=request,
+    normalized_user_code = user_code.strip().upper()
+    if not normalized_user_code:
+        return await _render_device_verify(datasette, request, user_code=user_code)
+
+    device_row = await _get_device_code_by_user_code(datasette, normalized_user_code)
+    if not device_row:
+        return await _render_device_verify(
+            datasette, request, user_code=normalized_user_code, error="Invalid code"
+        )
+
+    error = _device_code_error_message(device_row)
+    if error:
+        return await _render_device_verify(
+            datasette, request, user_code=normalized_user_code, error=error
+        )
+
+    return await _render_device_verify(
+        datasette,
+        request,
+        user_code=normalized_user_code,
+        review_request=True,
+        scope_raw=device_row["scope"],
     )
-    return Response.html(html)
 
 
 async def _oauth_device_verify_post(request, datasette):
@@ -546,72 +684,69 @@ async def _oauth_device_verify_post(request, datasette):
     post_vars = await request.post_vars()
     user_code = post_vars.get("code", "").strip().upper()
     deny = post_vars.get("deny", "")
+    confirm = post_vars.get("confirm", "")
 
-    internal = datasette.get_internal_database()
-    result = await internal.execute(
-        "SELECT device_code, user_code, scope, expires_at, status "
-        "FROM oauth_device_codes WHERE user_code = ?",
-        [user_code],
-    )
-    rows = result.rows
-    if not rows:
-        html = await datasette.render_template(
-            "oauth_device_verify.html",
-            {"user_code": user_code, "error": "Invalid code", "success": False},
-            request=request,
+    device_row = await _get_device_code_by_user_code(datasette, user_code)
+    if not device_row:
+        return await _render_device_verify(
+            datasette, request, user_code=user_code, error="Invalid code"
         )
-        return Response.html(html)
 
-    device_row = dict(rows[0])
-
-    if device_row["status"] != "pending":
-        html = await datasette.render_template(
-            "oauth_device_verify.html",
-            {
-                "user_code": user_code,
-                "error": "This code has already been used",
-                "success": False,
-            },
-            request=request,
+    error = _device_code_error_message(device_row)
+    if error:
+        return await _render_device_verify(
+            datasette, request, user_code=user_code, error=error
         )
-        return Response.html(html)
 
-    if time.time() > float(device_row["expires_at"]):
-        html = await datasette.render_template(
-            "oauth_device_verify.html",
-            {
-                "user_code": user_code,
-                "error": "This code has expired",
-                "success": False,
-            },
-            request=request,
+    if not confirm:
+        return await _render_device_verify(
+            datasette,
+            request,
+            user_code=user_code,
+            review_request=True,
+            scope_raw=device_row["scope"],
         )
-        return Response.html(html)
 
     if deny:
+        internal = datasette.get_internal_database()
         await internal.execute_write(
             "UPDATE oauth_device_codes SET status = 'denied' WHERE user_code = ?",
             [user_code],
         )
-        html = await datasette.render_template(
-            "oauth_device_verify.html",
-            {"user_code": user_code, "error": "Authorization denied", "success": False},
-            request=request,
+        return await _render_device_verify(
+            datasette,
+            request,
+            user_code=user_code,
+            error="Authorization denied",
         )
-        return Response.html(html)
 
-    # Approve — set status to approved and record the actor
+    token_ttl_seconds = _parse_device_token_ttl(post_vars.get("token_ttl_seconds"))
+    if token_ttl_seconds is None:
+        return await _render_device_verify(
+            datasette,
+            request,
+            user_code=user_code,
+            error="Invalid token time limit",
+            review_request=True,
+            scope_raw=device_row["scope"],
+            selected_ttl_seconds=post_vars.get("token_ttl_seconds"),
+        )
+
+    internal = datasette.get_internal_database()
+    # Approve — set status to approved, record the actor, and persist chosen TTL
     await internal.execute_write(
-        "UPDATE oauth_device_codes SET status = 'approved', actor_id = ? WHERE user_code = ?",
-        [request.actor["id"], user_code],
+        "UPDATE oauth_device_codes "
+        "SET status = 'approved', actor_id = ?, token_ttl_seconds = ? "
+        "WHERE user_code = ?",
+        [request.actor["id"], token_ttl_seconds, user_code],
     )
 
-    html = await datasette.render_template(
-        "oauth_device_verify.html",
-        {"user_code": user_code, "error": None, "success": True},
-        request=request,
+    return await _render_device_verify(
+        datasette,
+        request,
+        user_code=user_code,
+        success=True,
     )
-    return Response.html(html)
 
 
 async def _oauth_token_device_code(post_vars, datasette):
@@ -620,7 +755,7 @@ async def _oauth_token_device_code(post_vars, datasette):
 
     internal = datasette.get_internal_database()
     result = await internal.execute(
-        "SELECT device_code, user_code, scope, expires_at, status, actor_id "
+        "SELECT device_code, user_code, scope, expires_at, status, actor_id, token_ttl_seconds "
         "FROM oauth_device_codes WHERE device_code = ?",
         [device_code],
     )
@@ -646,8 +781,12 @@ async def _oauth_token_device_code(post_vars, datasette):
     approved_scopes = json.loads(device_row["scope"])
 
     restrictions = build_restrictions(approved_scopes)
+    token_ttl_seconds = (
+        device_row.get("token_ttl_seconds") or DEFAULT_DEVICE_TOKEN_TTL_SECONDS
+    )
     token = await datasette.create_token(
         device_row["actor_id"],
+        expires_after=int(token_ttl_seconds),
         restrictions=restrictions,
     )
 
@@ -661,6 +800,7 @@ async def _oauth_token_device_code(post_vars, datasette):
         {
             "access_token": token,
             "token_type": "bearer",
+            "expires_in": int(token_ttl_seconds),
         }
     )
 
