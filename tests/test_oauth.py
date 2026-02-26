@@ -626,3 +626,239 @@ async def test_scope_parsing():
             "logs": ["insert-row"],
         }
     }
+
+
+# --- Device Authorization Flow ---
+
+
+@pytest.mark.asyncio
+async def test_device_flow_initiate(datasette):
+    """POST /-/oauth/device returns device_code, user_code, verification_uri."""
+    response = await datasette.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": "[]"}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "device_code" in data
+    assert "user_code" in data
+    assert "verification_uri" in data
+    assert "expires_in" in data
+    assert "interval" in data
+    # user_code should be in XXXX-XXXX format
+    assert len(data["user_code"]) == 9
+    assert data["user_code"][4] == "-"
+
+
+@pytest.mark.asyncio
+async def test_device_flow_verify_requires_auth(datasette):
+    """GET /-/oauth/device/verify requires authentication."""
+    response = await datasette.client.get("/-/oauth/device/verify")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_device_flow_verify_invalid_code(datasette):
+    """POST with an invalid code shows error."""
+    cookies = auth_cookies(datasette)
+    response = await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        {"code": "ZZZZ-ZZZZ"},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    assert "Invalid code" in response.text
+
+
+@pytest.mark.asyncio
+async def test_device_flow_full(datasette):
+    """Full device flow: initiate, verify, exchange for token."""
+    # Step 1: Initiate device flow
+    response = await datasette.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": json.dumps([["view-instance"]])}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 200
+    device_data = response.json()
+    device_code = device_data["device_code"]
+    user_code = device_data["user_code"]
+
+    # Step 2: Poll should return authorization_pending
+    poll_response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert poll_response.status_code == 400
+    assert poll_response.json()["error"] == "authorization_pending"
+
+    # Step 3: User approves
+    cookies = auth_cookies(datasette)
+    approve_response = await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        {"code": user_code},
+        cookies=cookies,
+    )
+    assert approve_response.status_code == 200
+    assert "authorized successfully" in approve_response.text
+
+    # Step 4: Poll again — should get token
+    token_response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert token_response.status_code == 200
+    token_data = token_response.json()
+    assert "access_token" in token_data
+    assert token_data["token_type"] == "bearer"
+    assert token_data["access_token"].startswith("dstok_")
+
+    # Verify token encodes the right restrictions
+    decoded = datasette.unsign(token_data["access_token"][len("dstok_") :], "token")
+    assert decoded["a"] == "test-user"
+    assert "_r" in decoded
+
+
+@pytest.mark.asyncio
+async def test_device_flow_deny(datasette):
+    """User denies device authorization."""
+    # Initiate
+    response = await datasette.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": "[]"}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    device_data = response.json()
+    device_code = device_data["device_code"]
+    user_code = device_data["user_code"]
+
+    # User denies
+    cookies = auth_cookies(datasette)
+    deny_response = await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        {"code": user_code, "deny": "1"},
+        cookies=cookies,
+    )
+    assert deny_response.status_code == 200
+    assert "denied" in deny_response.text
+
+    # Poll should return access_denied
+    poll_response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert poll_response.status_code == 400
+    assert poll_response.json()["error"] == "access_denied"
+
+
+@pytest.mark.asyncio
+async def test_device_flow_code_reuse(datasette):
+    """Device codes should be single-use."""
+    # Initiate and approve
+    response = await datasette.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": "[]"}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    device_data = response.json()
+    device_code = device_data["device_code"]
+    user_code = device_data["user_code"]
+
+    cookies = auth_cookies(datasette)
+    await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        {"code": user_code},
+        cookies=cookies,
+    )
+
+    # First exchange succeeds
+    token_response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert token_response.status_code == 200
+
+    # Second exchange fails
+    token_response2 = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert token_response2.status_code == 400
+    assert token_response2.json()["error"] == "invalid_grant"
+
+
+@pytest.mark.asyncio
+async def test_device_flow_no_scopes_gives_unrestricted_token(datasette):
+    """Device flow with empty scopes gives an unrestricted token."""
+    # Initiate with no scopes
+    response = await datasette.client.post(
+        "/-/oauth/device",
+        content=urlencode({"scope": "[]"}),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    device_data = response.json()
+    device_code = device_data["device_code"]
+    user_code = device_data["user_code"]
+
+    # Approve
+    cookies = auth_cookies(datasette)
+    await csrf_post(
+        datasette,
+        "/-/oauth/device/verify",
+        {"code": user_code},
+        cookies=cookies,
+    )
+
+    # Exchange
+    token_response = await datasette.client.post(
+        "/-/oauth/token",
+        content=urlencode(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": device_code,
+            }
+        ),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert token_response.status_code == 200
+    token_data = token_response.json()
+
+    # Token should be unrestricted (no _r key)
+    decoded = datasette.unsign(token_data["access_token"][len("dstok_") :], "token")
+    assert decoded["a"] == "test-user"
+    assert "_r" not in decoded

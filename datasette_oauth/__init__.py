@@ -3,6 +3,7 @@ from datasette.utils.asgi import Response
 import json
 import secrets
 import hashlib
+import string
 import time
 from urllib.parse import urlencode
 
@@ -62,6 +63,15 @@ def startup(datasette):
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 used INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS oauth_device_codes (
+                device_code TEXT PRIMARY KEY,
+                user_code TEXT NOT NULL UNIQUE,
+                scope TEXT NOT NULL DEFAULT '[]',
+                expires_at TEXT NOT NULL,
+                interval INTEGER NOT NULL DEFAULT 5,
+                status TEXT NOT NULL DEFAULT 'pending',
+                actor_id TEXT
             );
             """)
 
@@ -303,6 +313,10 @@ async def oauth_token(request, datasette):
 
     post_vars = await request.post_vars()
     grant_type = post_vars.get("grant_type", "")
+
+    if grant_type == "urn:ietf:params:oauth:grant-type:device_code":
+        return await _oauth_token_device_code(post_vars, datasette)
+
     code = post_vars.get("code", "")
     client_id = post_vars.get("client_id", "")
     client_secret = post_vars.get("client_secret", "")
@@ -371,10 +385,230 @@ async def oauth_token(request, datasette):
     )
 
 
+def _generate_user_code():
+    """Generate a short, human-friendly user code like ABCD-EFGH."""
+    chars = string.ascii_uppercase + string.digits
+    # Remove confusing characters
+    chars = (
+        chars.replace("O", "")
+        .replace("0", "")
+        .replace("I", "")
+        .replace("1", "")
+        .replace("L", "")
+    )
+    part1 = "".join(secrets.choice(chars) for _ in range(4))
+    part2 = "".join(secrets.choice(chars) for _ in range(4))
+    return f"{part1}-{part2}"
+
+
+async def oauth_device(request, datasette):
+    """POST /-/oauth/device — initiate device authorization flow."""
+    if request.method != "POST":
+        return Response.json({"error": "Method not allowed"}, status=405)
+
+    post_vars = await request.post_vars()
+    scope_raw = post_vars.get("scope", "[]")
+
+    # Validate scope JSON
+    try:
+        scopes = json.loads(scope_raw)
+        if not isinstance(scopes, list):
+            raise ValueError
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return Response.json({"error": "Invalid scope"}, status=400)
+
+    device_code = secrets.token_hex(32)
+    user_code = _generate_user_code()
+    now = time.time()
+    expires_at = now + 900  # 15 minutes
+    interval = 5
+
+    internal = datasette.get_internal_database()
+    await internal.execute_write(
+        "INSERT INTO oauth_device_codes "
+        "(device_code, user_code, scope, expires_at, interval, status, actor_id) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', NULL)",
+        [device_code, user_code, json.dumps(scopes), str(expires_at), interval],
+    )
+
+    base_url = datasette.absolute_url(request, "/-/oauth/device/verify")
+
+    return Response.json(
+        {
+            "device_code": device_code,
+            "user_code": user_code,
+            "verification_uri": base_url,
+            "expires_in": 900,
+            "interval": interval,
+        }
+    )
+
+
+async def oauth_device_verify(request, datasette):
+    """GET/POST /-/oauth/device/verify — user enters code and approves."""
+    if request.method == "GET":
+        return await _oauth_device_verify_get(request, datasette)
+    elif request.method == "POST":
+        return await _oauth_device_verify_post(request, datasette)
+    return Response.json({"error": "Method not allowed"}, status=405)
+
+
+async def _oauth_device_verify_get(request, datasette):
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+
+    user_code = request.args.get("code", "")
+    html = await datasette.render_template(
+        "oauth_device_verify.html",
+        {"user_code": user_code, "error": None, "success": False},
+        request=request,
+    )
+    return Response.html(html)
+
+
+async def _oauth_device_verify_post(request, datasette):
+    auth_error = _require_auth(request)
+    if auth_error:
+        return auth_error
+
+    post_vars = await request.post_vars()
+    user_code = post_vars.get("code", "").strip().upper()
+    deny = post_vars.get("deny", "")
+
+    internal = datasette.get_internal_database()
+    result = await internal.execute(
+        "SELECT device_code, user_code, scope, expires_at, status "
+        "FROM oauth_device_codes WHERE user_code = ?",
+        [user_code],
+    )
+    rows = result.rows
+    if not rows:
+        html = await datasette.render_template(
+            "oauth_device_verify.html",
+            {"user_code": user_code, "error": "Invalid code", "success": False},
+            request=request,
+        )
+        return Response.html(html)
+
+    device_row = dict(rows[0])
+
+    if device_row["status"] != "pending":
+        html = await datasette.render_template(
+            "oauth_device_verify.html",
+            {
+                "user_code": user_code,
+                "error": "This code has already been used",
+                "success": False,
+            },
+            request=request,
+        )
+        return Response.html(html)
+
+    if time.time() > float(device_row["expires_at"]):
+        html = await datasette.render_template(
+            "oauth_device_verify.html",
+            {
+                "user_code": user_code,
+                "error": "This code has expired",
+                "success": False,
+            },
+            request=request,
+        )
+        return Response.html(html)
+
+    if deny:
+        await internal.execute_write(
+            "UPDATE oauth_device_codes SET status = 'denied' WHERE user_code = ?",
+            [user_code],
+        )
+        html = await datasette.render_template(
+            "oauth_device_verify.html",
+            {"user_code": user_code, "error": "Authorization denied", "success": False},
+            request=request,
+        )
+        return Response.html(html)
+
+    # Approve — set status to approved and record the actor
+    await internal.execute_write(
+        "UPDATE oauth_device_codes SET status = 'approved', actor_id = ? WHERE user_code = ?",
+        [request.actor["id"], user_code],
+    )
+
+    html = await datasette.render_template(
+        "oauth_device_verify.html",
+        {"user_code": user_code, "error": None, "success": True},
+        request=request,
+    )
+    return Response.html(html)
+
+
+async def _oauth_token_device_code(post_vars, datasette):
+    """Handle grant_type=urn:ietf:params:oauth:grant-type:device_code."""
+    device_code = post_vars.get("device_code", "")
+
+    internal = datasette.get_internal_database()
+    result = await internal.execute(
+        "SELECT device_code, user_code, scope, expires_at, status, actor_id "
+        "FROM oauth_device_codes WHERE device_code = ?",
+        [device_code],
+    )
+    rows = result.rows
+    if not rows:
+        return Response.json({"error": "invalid_grant"}, status=400)
+
+    device_row = dict(rows[0])
+
+    if time.time() > float(device_row["expires_at"]):
+        return Response.json({"error": "expired_token"}, status=400)
+
+    if device_row["status"] == "pending":
+        return Response.json({"error": "authorization_pending"}, status=400)
+
+    if device_row["status"] == "denied":
+        return Response.json({"error": "access_denied"}, status=400)
+
+    if device_row["status"] == "used":
+        return Response.json({"error": "invalid_grant"}, status=400)
+
+    # status == "approved" — issue a token
+    approved_scopes = json.loads(device_row["scope"])
+
+    if approved_scopes:
+        restrict_all, restrict_database, restrict_resource = parse_scopes(
+            approved_scopes
+        )
+        token = datasette.create_token(
+            device_row["actor_id"],
+            restrict_all=restrict_all or None,
+            restrict_database=restrict_database or None,
+            restrict_resource=restrict_resource or None,
+        )
+    else:
+        # No scopes requested — unrestricted token
+        token = datasette.create_token(device_row["actor_id"])
+
+    # Mark as used so the device_code can't be reused
+    await internal.execute_write(
+        "UPDATE oauth_device_codes SET status = 'used' WHERE device_code = ?",
+        [device_code],
+    )
+
+    return Response.json(
+        {
+            "access_token": token,
+            "token_type": "bearer",
+        }
+    )
+
+
 @hookimpl
 def skip_csrf(scope):
-    """Skip CSRF for the token endpoint — it uses client_secret auth."""
-    if scope["type"] == "http" and scope["path"] == "/-/oauth/token":
+    """Skip CSRF for machine-to-machine endpoints."""
+    if scope["type"] == "http" and scope["path"] in (
+        "/-/oauth/token",
+        "/-/oauth/device",
+    ):
         return True
 
 
@@ -385,4 +619,6 @@ def register_routes(datasette):
         (r"^/-/oauth/clients\.json$", oauth_clients_json),
         (r"^/-/oauth/authorize$", oauth_authorize),
         (r"^/-/oauth/token$", oauth_token),
+        (r"^/-/oauth/device$", oauth_device),
+        (r"^/-/oauth/device/verify$", oauth_device_verify),
     ]

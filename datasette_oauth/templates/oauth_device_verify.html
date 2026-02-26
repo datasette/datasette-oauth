@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}Verify Device{% endblock %}
+
+{% block content %}
+
+<h1>Verify Device</h1>
+
+{% if success %}
+<p>Device authorized successfully. You can close this window and return to your terminal.</p>
+{% else %}
+
+{% if error %}
+<p style="color: red; font-weight: bold;">{{ error }}</p>
+{% endif %}
+
+<p>Enter the code shown on your device:</p>
+
+<form method="post" action="/-/oauth/device/verify">
+  <input type="hidden" name="csrftoken" value="{{ csrftoken() }}">
+  <p>
+    <input type="text" name="code" value="{{ user_code }}" placeholder="ABCD-EFGH"
+           style="font-size: 1.5em; font-family: monospace; letter-spacing: 0.1em; text-transform: uppercase; width: 12em; text-align: center;"
+           autocomplete="off" autofocus>
+  </p>
+  <p>
+    <input type="submit" value="Authorize">
+    <input type="submit" name="deny" value="Deny">
+  </p>
+</form>
+
+{% endif %}
+
+{% endblock %}
